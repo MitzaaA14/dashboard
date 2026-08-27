@@ -1,0 +1,2341 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>G1 — Nativ SLAM 3D Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght=400;500;600;700&family=JetBrains+Mono:wght=400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+
+  <style>
+    .layout-monolith { display: flex; width: 100vw; height: 100vh; overflow: hidden; background: #050810; }
+    
+    .sidebar-fixed {
+      width: 340px; height: 100vh; background: var(--bg-surface);
+      border-right: 1px solid var(--border); padding: 16px;
+      display: flex; flex-direction: column; gap: 14px; box-sizing: border-box; flex-shrink: 0;
+      overflow-y: auto;
+    }
+    .sidebar-fixed > * { flex-shrink: 0; }
+
+    .main-viewport { flex: 1; height: 100vh; display: flex; flex-direction: column; position: relative; }
+    .viewport-container { width: 100%; height: calc(100vh - 56px); position: relative; }
+
+    .pip-video-feed {
+      position: absolute; bottom: 20px; right: 20px;
+      width: 220px; height: 140px; background: #000;
+      border: 1px solid var(--border-focus); border-radius: var(--radius);
+      overflow: hidden; box-shadow: var(--shadow); z-index: 100;
+    }
+    
+    .pip-video-feed img { width: 100%; height: 100%; object-fit: cover; }
+
+    .map-filter-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .map-filter-control { display:flex; flex-direction:column; gap:3px; min-width:0; }
+    .map-filter-control label { display:flex; justify-content:space-between; gap:6px; color:var(--text-secondary); font-size:0.68rem; }
+    .map-filter-control input[type="number"] {
+      width:100%; box-sizing:border-box; padding:7px 8px; border-radius:4px;
+      border:1px solid var(--border); background:#0f172a; color:white;
+      font-size:0.74rem; font-variant-numeric:tabular-nums;
+    }
+    .map-filter-control input[type="number"]:focus { outline:1px solid #7c83ff; border-color:#7c83ff; }
+    .map-filter-layers { display:grid; grid-template-columns:1fr 1fr; gap:5px; font-size:0.68rem; color:var(--text-secondary); }
+    .map-filter-layers label { display:flex; align-items:center; gap:5px; }
+    .map-filter-select { width:100%; padding:5px; border-radius:4px; border:1px solid var(--border); background:#0f172a; color:white; font-size:0.7rem; }
+    .costmap-modal { position:fixed; inset:0; z-index:1000; display:none; align-items:center; justify-content:center; padding:24px; background:rgba(2,6,23,0.88); }
+    .costmap-dialog { width:min(1100px, 96vw); height:min(900px, 94vh); display:flex; flex-direction:column; gap:10px; padding:14px; box-sizing:border-box; border:1px solid #475569; border-radius:10px; background:#0b1220; box-shadow:0 25px 70px rgba(0,0,0,0.55); }
+    .costmap-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .costmap-scroll { flex:1; min-height:240px; overflow:auto; display:block; border:1px solid #334155; border-radius:6px; background:#020617; }
+    #costmap-canvas { display:block; margin:auto; image-rendering:pixelated; image-rendering:crisp-edges; cursor:crosshair; }
+    .costmap-legend { display:flex; flex-wrap:wrap; gap:12px; font-size:0.72rem; color:#cbd5e1; }
+    .costmap-swatch { display:inline-block; width:13px; height:13px; margin-right:4px; vertical-align:-2px; border:1px solid rgba(255,255,255,0.35); }
+    .costmap-controls { display:grid; grid-template-columns:repeat(4, minmax(110px, 1fr)); gap:7px; padding:8px; border:1px solid #334155; border-radius:6px; background:#0f172a; }
+    .costmap-controls label { display:flex; flex-direction:column; gap:3px; font-size:0.67rem; color:#cbd5e1; }
+    .costmap-controls input { width:100%; box-sizing:border-box; padding:6px; border:1px solid #475569; border-radius:4px; background:#020617; color:white; }
+    @media (max-width:800px) { .costmap-controls { grid-template-columns:repeat(2, minmax(110px, 1fr)); } }
+  </style>
+</head>
+<body>
+
+<div class="layout-monolith">
+
+  <aside class="sidebar-fixed">
+    <div class="sidebar-logo">
+      <div class="logo-icon">🔲</div>
+      <span class="logo-text">SLAM 3D Tuner</span>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><h2>Navigare autonomă A → B</h2></div>
+      <div class="card-body" style="display:flex; flex-direction:column; gap:7px;">
+        <div style="font-size:0.69rem; color:var(--text-secondary); line-height:1.35;">
+          Ordine: încarcă harta → setează poziția robotului → alege punctul B → previzualizează ruta → confirmă. Robotul nu pornește înainte de confirmare.
+        </div>
+        <div id="nav-sensor-readiness" style="font-size:0.67rem; padding:6px; border:1px solid var(--border); border-radius:4px; color:#f59e0b; background:#07101f;">
+          Protecție autonomie: verific RealSense și LiDAR...
+        </div>
+        <label style="font-size:0.68rem; color:#cbd5e1; display:flex; flex-direction:column; gap:4px;">
+          Planificator traseu
+          <select id="nav-driver" style="padding:7px; border-radius:4px; border:1px solid var(--border); background:#0f172a; color:white;">
+            <option value="legacy" selected>A* stabil pe PCD</option>
+          </select>
+        </label>
+        <label style="font-size:0.68rem; color:#cbd5e1; display:flex; flex-direction:column; gap:4px;">
+          Executor mișcare
+          <select id="nav-executor" style="padding:7px; border-radius:4px; border:1px solid var(--border); background:#0f172a; color:white;">
+            <option id="nav-executor-native-option" value="native_1102" selected>Unitree nativ 1102</option>
+          </select>
+        </label>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:5px;">
+          <input id="nav-goal-x" type="number" step="0.1" placeholder="X țintă (m)" style="padding:6px; border-radius:4px; border:1px solid var(--border); background:#0f172a; color:white;" />
+          <input id="nav-goal-y" type="number" step="0.1" placeholder="Y țintă (m)" style="padding:6px; border-radius:4px; border:1px solid var(--border); background:#0f172a; color:white;" />
+          <input id="nav-goal-yaw" type="number" step="5" value="0" placeholder="Yaw final (°)" style="padding:6px; border-radius:4px; border:1px solid var(--border); background:#0f172a; color:white;" />
+          <input id="nav-timeout" type="number" min="0" max="86400" value="0" placeholder="0 = fără limită" title="0 înseamnă autonomie fără limită de timp" style="padding:6px; border-radius:4px; border:1px solid var(--border); background:#0f172a; color:white;" />
+        </div>
+        <label style="font-size:0.68rem; color:#cbd5e1; display:flex; flex-direction:column; gap:4px;">
+          Acțiune după sosire
+          <select id="nav-goal-gesture" style="padding:7px; border-radius:4px; border:1px solid var(--border); background:#0f172a; color:white;">
+            <option value="none">Fără gest</option>
+            <option value="wave">👋 Face cu mâna</option>
+            <option value="kiss">😘 Dă pupic</option>
+            <option value="handshake">🤝 Dă noroc / întinde mâna</option>
+            <option value="clap">👏 Bate din palme</option>
+          </select>
+        </label>
+        <button class="btn btn-full" id="nav-start-btn" onclick="startAutonomousNavigation()" style="background:#16a34a; color:white;">🧭 Previzualizează ruta</button>
+        <button class="btn btn-full" id="nav-confirm-btn" onclick="confirmAutonomousNavigation()" style="display:none; background:#f59e0b; color:#111827; font-weight:700;">✓ Confirmă ruta și pornește</button>
+        <button class="btn btn-full" id="nav-cancel-preview-btn" onclick="clearNavigationPreview(true)" style="display:none; background:#475569; color:white;">✕ Anulează ruta</button>
+        <button class="btn btn-full" id="nav-pick-btn" onclick="toggleGoalTool()" style="background:#2563eb; color:white;">⌖ Alege punctul B pe hartă</button>
+        <button class="btn btn-full" id="nav-clear-goal-btn" onclick="clearNavigationGoal()" style="background:#475569; color:white;">⌫ Șterge punctul B</button>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:5px;">
+          <button class="btn" onclick="queueNavigationGoal('append')" style="background:#0891b2; color:white;">＋ Adaugă după task</button>
+          <button class="btn" onclick="queueNavigationGoal('replace')" style="background:#7c3aed; color:white;">↺ Oprește și înlocuiește</button>
+        </div>
+        <div id="nav-queue" style="font-size:0.66rem; color:var(--text-secondary); padding:5px; border:1px solid var(--border); border-radius:4px;">Coadă: goală</div>
+        <button class="btn btn-danger btn-full" onclick="stopAutonomousNavigation()">■ STOP navigare</button>
+        <button class="btn btn-full" onclick="downloadNavigationFlightLog()" style="background:#475569;color:white;">⇩ Descarcă jurnalul cursei</button>
+        <div id="nav-result" style="font-size:0.69rem; color:var(--text-secondary); white-space:pre-wrap; line-height:1.35;">Stare: idle</div>
+        <pre id="nav-diagnostics" style="display:none; margin-top:6px; max-height:220px; overflow:auto; padding:6px; border:1px solid var(--border); border-radius:4px; background:#020617; color:#cbd5e1; font-size:0.66rem; white-space:pre-wrap;"></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><h2>Administrare Scanare</h2></div>
+      <div class="card-body">
+        <button class="btn btn-full" id="scan-toggle-btn" onclick="toggleRealtimeScan()" style="background:#d97706; color:white; margin-bottom:6px;">⏸ Pauză scanare</button>
+        <button class="btn btn-danger btn-full" onclick="stopAndClearRealtimeScan()">⏹ Oprește și șterge</button>
+        <div id="scan-state-text" style="font-size:0.68rem; color:var(--text-secondary); margin-top:6px;">Scanare live: activă</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><h2>Filtre vizuale hartă</h2></div>
+      <div class="card-body" style="display:flex; flex-direction:column; gap:9px;">
+        <div style="font-size:0.67rem; color:var(--text-secondary); line-height:1.35;">Preset implicit apropiat de vizualizarea Unitree. Filtrele schimbă numai afișarea, nu PCD-ul salvat.</div>
+        <div class="map-filter-grid">
+          <div class="map-filter-control">
+            <label><span>Înălțime minimă</span><b id="map-z-min-val">-0.15 m</b></label>
+            <input id="map-z-min" type="number" inputmode="decimal" min="-3.00" max="1.00" step="0.05" value="-0.15" onchange="updateMapViewFilters()" />
+          </div>
+          <div class="map-filter-control">
+            <label><span>Înălțime maximă</span><b id="map-z-max-val">2.20 m</b></label>
+            <input id="map-z-max" type="number" inputmode="decimal" min="0.20" max="4.00" step="0.05" value="2.20" onchange="updateMapViewFilters()" />
+          </div>
+          <div class="map-filter-control">
+            <label><span>Densitate</span><b id="map-density-val">100%</b></label>
+            <input id="map-density" type="number" inputmode="numeric" min="10" max="100" step="5" value="100" onchange="updateMapViewFilters()" />
+          </div>
+          <div class="map-filter-control">
+            <label><span>Mărime punct</span><b id="map-point-size-val">0.035</b></label>
+            <input id="map-point-size" type="number" inputmode="decimal" min="0.010" max="0.100" step="0.005" value="0.035" onchange="updateMapViewFilters()" />
+          </div>
+          <div class="map-filter-control" style="grid-column:1 / -1;">
+            <label><span>Opacitate</span><b id="map-opacity-val">92%</b></label>
+            <input id="map-opacity" type="number" inputmode="numeric" min="20" max="100" step="2" value="92" onchange="updateMapViewFilters()" />
+          </div>
+          <div class="map-filter-control" style="grid-column:1 / -1;">
+            <label><span>Ridicare vizuală</span><b id="map-height-offset-val">+0.00 m</b></label>
+            <input id="map-height-offset" type="number" inputmode="decimal" min="-3.00" max="3.00" step="0.05" value="0.00" onchange="updateMapViewFilters()" />
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:7px; padding:8px; border:1px solid var(--border); border-radius:6px; background:#07101f;">
+          <label style="display:flex; align-items:center; gap:7px; font-size:0.7rem; color:#e2e8f0;">
+            <input id="map-floor-leveling" type="checkbox" checked onchange="recalculateFloorPlane()" /> Nivelează automat după planul podelei
+          </label>
+          <div class="map-filter-grid">
+            <div class="map-filter-control">
+              <label><span>Bandă podea</span><b id="map-floor-band-val">±0.08 m</b></label>
+              <input id="map-floor-band" type="number" inputmode="decimal" min="0.03" max="0.25" step="0.01" value="0.08" onchange="recalculateFloorPlane()" />
+            </div>
+            <div class="map-filter-control">
+              <label><span>Culoare podea</span></label>
+              <input id="map-floor-color" type="color" value="#2563eb" onchange="updateMapViewFilters()" style="width:100%; height:30px; padding:2px; border:1px solid var(--border); border-radius:4px; background:#0f172a;" />
+            </div>
+          </div>
+          <label style="display:flex; align-items:center; gap:7px; font-size:0.7rem; color:#cbd5e1;">
+            <input id="map-floor-visible" type="checkbox" checked onchange="updateMapViewFilters()" /> Afișează punctele podelei
+          </label>
+          <div id="map-floor-status" style="font-size:0.66rem; color:#94a3b8; line-height:1.35;">Podeaua se calculează după încărcarea hărții.</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+            <button class="btn" onclick="setMapTopView()" style="background:#0e7490; color:white; font-size:0.7rem;">⌖ Vedere de sus</button>
+            <button class="btn" onclick="setMapPerspectiveView()" style="background:#475569; color:white; font-size:0.7rem;">◩ Vedere 3D</button>
+          </div>
+        </div>
+        <select id="map-color-mode" class="map-filter-select" onchange="updateMapViewFilters()">
+          <option value="unitree" selected>Paletă Unitree — verde / galben / roșu</option>
+          <option value="height">Înălțime — albastru / cyan</option>
+          <option value="amber">Monocrom — auriu</option>
+        </select>
+        <div class="map-filter-layers">
+          <label><input id="layer-live" type="checkbox" checked onchange="updateMapViewFilters()" /> SLAM live</label>
+          <label><input id="layer-loaded" type="checkbox" checked onchange="updateMapViewFilters()" /> Hartă salvată</label>
+          <label><input id="layer-camera" type="checkbox" onchange="updateMapViewFilters()" /> RealSense 3D</label>
+          <span id="map-visible-stats" style="text-align:right;">0 vizibile</span>
+        </div>
+        <button class="btn btn-full" onclick="resetMapViewFilters()" style="background:#334155; color:white; font-size:0.72rem;">↺ Preset Unitree implicit</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><h2>Gestiune Hărți & Localizare</h2></div>
+      <div class="card-body" style="display: flex; flex-direction: column; gap: 8px;">
+        <button class="btn btn-full" id="start-mapping-btn" onclick="startMappingRobot()" style="background:#0891b2; color:white; font-size:0.75rem;">🗺️ Start Cartografiere (1801)</button>
+        
+        <div style="display: flex; gap: 4px; margin-top: 4px;">
+          <input type="text" id="map-name-input" placeholder="nume_harta" style="flex:1; padding: 6px; border-radius:4px; border:1px solid var(--border); background:#0f172a; color:white; font-size:0.75rem;" />
+          <button class="btn" onclick="saveRobotMap()" style="background:#4f46e5; color:white; font-size:0.75rem;">💾 Salvează PCD</button>
+        </div>
+        
+        <hr style="border:0; border-top:1px solid var(--border); margin: 2px 0;" />
+        
+        <div style="font-size:0.72rem; color:var(--text-secondary);">Încarcă hartă pentru localizare:</div>
+        <div style="display: flex; gap: 4px;">
+          <select id="map-select" style="flex:1; padding: 6px; border-radius:4px; border:1px solid var(--border); background:#0f172a; color:white; font-size:0.75rem;">
+            <option value="">Aștept listare...</option>
+          </select>
+          <button class="btn" onclick="refreshMapList()" style="background:#334155; color:white; font-size:0.75rem;">🔄</button>
+        </div>
+        <button class="btn btn-full" id="load-map-btn" onclick="loadRobotMap()" style="background:#059669; color:white; font-size:0.75rem;">📍 Afișează și indexează harta</button>
+        <button type="button" class="btn btn-full" id="unload-map-btn" onclick="clearDisplayedMap()" title="Golește numai afișarea 3D; harta, localizarea și fișierul PCD rămân active" style="background:#dc2626; color:white; font-size:0.75rem;">⌫ Șterge harta din afișare</button>
+        <button class="btn btn-full" onclick="openCostmap2D()" style="background:#b45309; color:white; font-size:0.72rem;">🧱 Vezi costmap 2D</button>
+        <button class="btn btn-full" onclick="startRelocationRobot()" style="background:#3b82f6; color:white; font-size:0.72rem; margin-top: 2px;">⚡ Reverifică localizarea aleasă</button>
+        
+        <hr style="border:0; border-top:1px solid var(--border); margin: 4px 0;" />
+        <div style="font-size:0.72rem; color:var(--text-secondary);">Orientare pe hartă:</div>
+        <button class="btn btn-full" id="init-pose-btn" onclick="togglePoseTool()"
+          style="background:#7c3aed; color:white; font-size:0.72rem;">🧭 Setează poziția și orientarea</button>
+        <div style="font-size:0.68rem; color:var(--text-secondary); line-height:1.35;">
+          Apasă pe sol unde e robotul, trage în direcția în care se uită,
+          eliberează. Robotul va încerca apoi să-și verifice poziția cu ce vede live.
+          <b>Esc</b> anulează.
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; font-size:0.68rem; color:var(--text-secondary);">
+          <span><span style="color:#ff3b30;">▮</span> orientare curentă</span>
+          <span><span style="color:#22c55e;">▮</span> orientare setată de tine</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><h2>Teleop (SLAM live)</h2></div>
+      <div class="card-body">
+        <div style="margin-bottom:8px; padding:8px; border:1px solid #7f1d1d; border-radius:4px; background:rgba(127,29,29,0.18);">
+          <label for="fsm-confirmation-input" style="display:block; font-size:0.7rem; color:#fecaca; margin-bottom:5px;">Pentru fiecare schimbare de stare scrie exact <b>ok</b>:</label>
+          <input id="fsm-confirmation-input" type="text" autocomplete="off" spellcheck="false" placeholder="scrie ok" oninput="updateFsmButtons()" style="width:100%; box-sizing:border-box; padding:7px; color:white; background:#0b1220; border:1px solid #991b1b; border-radius:4px;" />
+          <div id="fsm-confirmation-hint" style="font-size:0.66rem; color:#fca5a5; margin-top:4px;">Confirmarea este valabilă pentru o singură comandă.</div>
+        </div>
+        <button class="btn btn-full fsm-state-button" disabled id="wake-up-btn" onclick="wakeUpRobot()">⚡ Autonom WAKE-UP (1→4→801)</button>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0;">
+          <button class="btn fsm-state-button" disabled id="damp-btn" onclick="dampRobot()" style="background:#d97706; color:white; font-size:0.7rem; padding: 6px 2px;">DAMP (FSM 1)</button>
+          <button class="btn fsm-state-button" disabled id="zero-torque-btn" onclick="zeroTorqueRobot()" style="background:#dc2626; color:white; font-size:0.7rem; padding: 6px 2px;">ZERO TORQUE (0)</button>
+          <button class="btn fsm-state-button" disabled id="stand-up-btn" onclick="standUpRobot()" style="background:#2563eb; color:white; font-size:0.7rem; padding: 6px 2px;">PREPARATION (4)</button>
+          <button class="btn fsm-state-button" disabled id="run-btn" onclick="runRobot()" style="background:#16a34a; color:white; font-size:0.7rem; padding: 6px 2px;">RUN (FSM 801)</button>
+        </div>
+
+        <div style="margin: 10px 0; padding: 8px; background: rgba(255,255,255,0.03); border-radius: 4px; border: 1px solid var(--border);">
+          <div style="display: flex; justify-content: space-between; font-size: 0.72rem; margin-bottom: 4px;">
+            <span>Viteză mers/Nav A* (limită indoor 0,35 m/s):</span>
+            <b id="linear-speed-val">0.30</b>
+          </div>
+          <input type="range" id="linear-speed-input" min="0.10" max="1.00" step="0.05" value="0.30" style="width: 100%; margin-bottom: 8px; cursor: pointer;" oninput="updateSpeedSettings()" />
+          
+          <div style="display: flex; justify-content: space-between; font-size: 0.72rem; margin-bottom: 4px;">
+            <span>Viteză Unghiulară (rad/s):</span>
+            <b id="yaw-speed-val">0.50</b>
+          </div>
+          <input type="range" id="yaw-speed-input" min="0.10" max="1.50" step="0.05" value="0.50" style="width: 100%; cursor: pointer;" oninput="updateSpeedSettings()" />
+        </div>
+
+        <button class="btn btn-full" id="status-btn" onclick="checkRobotStatus()" style="margin-top:2px; font-size:0.75rem;">🔍 Verifică status SDK</button>
+        <div id="status-result" style="font-size:0.7rem; color:var(--text-secondary); margin:6px 0; font-family:monospace; white-space:pre-wrap; max-height:140px; overflow-y:auto; border:1px solid rgba(255,255,255,0.08); padding:6px; background:rgba(0,0,0,0.15); border-radius:4px;"></div>
+        
+        <div class="status-row"><span class="status-dot" id="teleop-dot"></span><span class="status-label">Stare mișcare</span></div>
+        <div class="status-row"><span class="status-label">Comandă:</span><span class="status-val" id="teleop-cmd">vx=0.00 vy=0.00 ω=0.00</span></div>
+        <div style="font-size:0.72rem; color:var(--text-secondary); margin-top:6px; line-height:1.4;">
+          W/S: înainte/înapoi &nbsp;·&nbsp; A/D: rotire &nbsp;·&nbsp; Q/E: lateral<br>
+          (click pe pagină ca să prindă focus tastatura)
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-status" style="margin-top:auto;">
+      <div class="status-row"><span class="status-dot ok" id="ws-dot"></span><span class="status-label">Conexiune WebSocket</span></div>
+      <div class="status-row"><span class="status-label">Celule stocate:</span><span class="status-val" id="stat-pts">0</span></div>
+    </div>
+  </aside>
+
+  <main class="main-viewport">
+    <header class="topbar">
+      <h1 class="page-title">🔲 G1 Nativ SLAM 3D Realtime World Viewer</h1>
+      <div class="pose-display">X: <b id="pose-x">0.00</b>m Y: <b id="pose-y">0.00</b>m Yaw: <b id="pose-yaw">0.0</b>°</div>
+    </header>
+    
+    <div class="viewport-container">
+      <div id="view-3d" style="width:100%; height:100%"><canvas id="canvas-3d"></canvas></div>
+      
+      <div class="pip-video-feed">
+        <img id="live-video-feed" src="" style="display:none;">
+        <div id="video-placeholder" style="width:100%; height:100%; display:flex; align-items:center; justify-content:center; font-size:0.7rem; color:var(--text-secondary); text-align:center; padding:10px;">Aștept RealSense (5005)</div>
+      </div>
+
+      <div class="map-overlay-info" style="bottom: 20px; left: 20px;">Rotește: Click Stânga | Pan: Click Dreapta | Zoom: Scroll</div>
+    </div>
+  </main>
+
+</div>
+
+<div id="costmap-modal" class="costmap-modal" onclick="if(event.target===this) closeCostmap2D()">
+  <div class="costmap-dialog">
+    <div class="costmap-header">
+      <div>
+        <div id="costmap-heading" style="font-weight:700; color:white;">Costmap 2D — profil activ 0,20 m</div>
+        <div id="costmap-title" style="font-size:0.7rem; color:#94a3b8; word-break:break-all;">Aștept o hartă încărcată.</div>
+      </div>
+      <button class="btn" onclick="closeCostmap2D()" style="background:#475569; color:white;">✕ Închide</button>
+    </div>
+    <div class="costmap-legend">
+      <span><i class="costmap-swatch" style="background:#12352b;"></i>podea observată / preferată</span>
+      <span id="costmap-unknown-legend"><i class="costmap-swatch" style="background:#262626;"></i>necunoscut / penalizat</span>
+      <span id="costmap-comfort-legend"><i class="costmap-swatch" style="background:#d2b420;"></i>liber, dar penalizat pentru apropiere</span>
+      <span id="costmap-radius-legend"><i class="costmap-swatch" style="background:#f59e0b;"></i>zonă blocată prin raza traseului activă</span>
+      <span><i class="costmap-swatch" style="background:#ef4444;"></i>obstacol brut detectat în PCD</span>
+    </div>
+    <div class="costmap-controls">
+      <label>Rezoluție (m/celulă)<input id="costmap-resolution" type="number" min="0.05" max="0.30" step="0.01" value="0.08"></label>
+      <label>Minimum puncte/celulă<input id="costmap-min-points" type="number" min="1" max="20" step="1" value="3"></label>
+      <label>Înălțime minimă față de podea (m)<input id="costmap-min-z" type="number" min="-5" max="5" step="0.05" value="0.15"></label>
+      <label>Înălțime maximă față de podea (m)<input id="costmap-max-z" type="number" min="-5" max="5" step="0.05" value="1.85"></label>
+      <label>Rază hard traseu (m)<input id="costmap-radius" type="number" min="0.20" max="0.80" step="0.01" value="0.25"></label>
+      <label>Rază confort (m)<input id="costmap-comfort-radius" type="number" min="0.25" max="1.00" step="0.01" value="0.65"></label>
+      <label>Greutate confort<input id="costmap-clearance-weight" type="number" min="3.5" max="10" step="0.25" value="6.0"></label>
+      <label>Bandă detecție podea (m)<input id="costmap-floor-tolerance" type="number" min="0.03" max="0.25" step="0.01" value="0.08"></label>
+      <label style="justify-content:center;"><span>Nivelare PCD</span><span style="display:flex;align-items:center;gap:7px;"><input id="costmap-level-floor" type="checkbox" checked disabled style="width:auto;"> Obligatorie: exclude podeaua</span></label>
+    </div>
+    <div id="costmap-active-note" style="font-size:0.7rem;color:#67e8f9;">Valorile de aici vor fi folosite de următoarea rută A*.</div>
+    <div style="display:flex; gap:7px; align-items:center; flex-wrap:wrap;">
+      <button class="btn" onclick="openCostmap2D()" style="background:#d97706; color:white;">✓ Aplică la navigare + regenerează</button>
+      <button class="btn" onclick="resetCostmapSettings()" style="background:#334155; color:white;">Preset planner actual</button>
+      <span style="font-size:0.68rem; color:#67e8f9;">Preview-ul și următoarea rută folosesc exact valorile selectate aici.</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:0.72rem; color:#cbd5e1;">
+      <button class="btn" onclick="changeCostmapZoom(-1)" style="background:#334155; color:white;">−</button>
+      <span id="costmap-zoom-label">Zoom 1×</span>
+      <button class="btn" onclick="changeCostmapZoom(1)" style="background:#334155; color:white;">＋</button>
+      <span id="costmap-hover" style="margin-left:auto; font-family:monospace;">X: — · Y: —</span>
+    </div>
+    <div class="costmap-scroll"><canvas id="costmap-canvas" width="1" height="1"></canvas></div>
+    <div id="costmap-stats" style="font-size:0.72rem; color:#cbd5e1; white-space:pre-wrap; line-height:1.4;">Încarc...</div>
+    <div style="font-size:0.68rem; color:#fbbf24;">Atenție: verde înseamnă „plannerul îl tratează ca liber”, nu că zona a fost neapărat scanată și confirmată liberă.</div>
+  </div>
+</div>
+
+<script>
+// Cheie separată pe versiune, adresă și pagină. Astfel V24 nu reutilizează
+// accidental tokenul unui alt dashboard deschis în același browser.
+const TOKEN_STORAGE_KEY = `g1_dashboard_v24_token:${window.location.host}${window.location.pathname}`;
+let CONTROL_TOKEN = sessionStorage.getItem(TOKEN_STORAGE_KEY) || '';
+if (!CONTROL_TOKEN) {
+  CONTROL_TOKEN = window.prompt('Introdu tokenul afișat în terminalul dashboardului:') || '';
+  if (CONTROL_TOKEN) sessionStorage.setItem(TOKEN_STORAGE_KEY, CONTROL_TOKEN);
+}
+
+const API_BASE = window.location.origin;
+const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+const WS_URL = `${wsScheme}://${window.location.host}/ws?token=${encodeURIComponent(CONTROL_TOKEN)}`;
+
+const _nativeFetch = window.fetch.bind(window);
+let authResetInProgress = false;
+window.fetch = async (input, init = {}) => {
+  const headers = new Headers(init.headers || {});
+  if (CONTROL_TOKEN) headers.set('X-G1-Token', CONTROL_TOKEN);
+  const response = await _nativeFetch(input, {...init, headers});
+  if (response.status === 401 && !authResetInProgress) {
+    authResetInProgress = true;
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    window.alert('Tokenul dashboardului a expirat după restart. Introdu tokenul afișat de start_dashboard.sh.');
+    window.location.reload();
+  }
+  return response;
+};
+
+const S = {
+  ws: null, pose: { x: 0, y: 0, yaw: 0 },
+  scene: null, camera: null, renderer: null, controls: null,
+  pointsMesh: null, cameraPointsMesh: null, robotGroup: null,
+  robotVisual: null, robotFallback: null,
+  headingArrow: null, poseArrow: null, goalMarker: null,
+  routeLine: null, routePoints: null,
+  dynamicCostmapMesh: null,
+  loadedMapMesh: null,
+  rawSlamPoints: [], rawLoadedMapPoints: [],
+  visibleSlamPoints: 0, visibleLoadedMapPoints: 0,
+  floorPlane: null, floorPlaneSignature: null, floorPlaneSource: null
+};
+const MAP_DISPLAY_STORAGE_KEY = `g1_dashboard_v24_map_hidden:${window.location.host}${window.location.pathname}`;
+let mapDisplaySuppressed = sessionStorage.getItem(MAP_DISPLAY_STORAGE_KEY) === '1';
+let costmapView = {data: null, zoom: 1};
+let latestPoseSource = null;
+const COSTMAP_DEFAULTS = {resolution:0.10,minPoints:3,minZ:0.15,maxZ:1.85,radius:0.25,
+  comfortRadius:0.50,clearanceWeight:3.5,floorTolerance:0.08,levelFloor:true};
+
+function readCostmapSettings() {
+  const settings = {
+    resolution: Number(document.getElementById('costmap-resolution').value),
+    minPoints: Number(document.getElementById('costmap-min-points').value),
+    minZ: Number(document.getElementById('costmap-min-z').value),
+    maxZ: Number(document.getElementById('costmap-max-z').value),
+    radius: Number(document.getElementById('costmap-radius').value),
+    comfortRadius: Number(document.getElementById('costmap-comfort-radius').value),
+    clearanceWeight: Number(document.getElementById('costmap-clearance-weight').value),
+    floorTolerance: Number(document.getElementById('costmap-floor-tolerance').value),
+    levelFloor: true
+  };
+  // Raza hard controlează traseul pe hartă. Protecția live de urgență pentru
+  // corp și mâini rămâne separată în RealSense + LiDAR.
+  settings.radius = Math.max(0.20, settings.radius);
+  settings.comfortRadius = Math.max(settings.radius, settings.comfortRadius);
+  settings.clearanceWeight = Math.max(3.5, settings.clearanceWeight);
+  document.getElementById('costmap-radius').value = settings.radius.toFixed(2);
+  document.getElementById('costmap-comfort-radius').value = settings.comfortRadius.toFixed(2);
+  document.getElementById('costmap-clearance-weight').value = settings.clearanceWeight.toFixed(2);
+  if (![settings.resolution,settings.minPoints,settings.minZ,settings.maxZ,settings.radius,settings.comfortRadius,settings.clearanceWeight,settings.floorTolerance].every(Number.isFinite)) throw new Error('Toate valorile costmap trebuie să fie numere.');
+  if (settings.resolution < 0.05 || settings.resolution > 0.30) throw new Error('Rezoluția trebuie să fie între 0,05 și 0,30 m.');
+  if (!Number.isInteger(settings.minPoints) || settings.minPoints < 1 || settings.minPoints > 20) throw new Error('Minimum puncte trebuie să fie un întreg între 1 și 20.');
+  if (settings.minZ < -5 || settings.minZ > 5 || settings.maxZ < -5 || settings.maxZ > 5 || settings.minZ >= settings.maxZ) throw new Error('Z minim trebuie să fie mai mic decât Z maxim, în intervalul -5…5 m.');
+  if (settings.radius < 0.20 || settings.radius > 0.80) throw new Error('Raza hard a traseului trebuie să fie între 0,20 și 0,80 m.');
+  if (settings.comfortRadius < settings.radius || settings.comfortRadius > 1.00) throw new Error('Raza de confort trebuie să fie cel puțin raza blocată și maximum 1,00 m.');
+  if (settings.clearanceWeight < 3.5 || settings.clearanceWeight > 10) throw new Error('Greutatea de confort trebuie să fie între 3,5 și 10.');
+  if (settings.floorTolerance < 0.03 || settings.floorTolerance > 0.25) throw new Error('Banda podelei trebuie să fie între 0,03 și 0,25 m.');
+  return settings;
+}
+
+function resetCostmapSettings(regenerate = true) {
+  document.getElementById('costmap-resolution').value = COSTMAP_DEFAULTS.resolution;
+  document.getElementById('costmap-min-points').value = COSTMAP_DEFAULTS.minPoints;
+  document.getElementById('costmap-min-z').value = COSTMAP_DEFAULTS.minZ;
+  document.getElementById('costmap-max-z').value = COSTMAP_DEFAULTS.maxZ;
+  document.getElementById('costmap-radius').value = COSTMAP_DEFAULTS.radius;
+  document.getElementById('costmap-comfort-radius').value = COSTMAP_DEFAULTS.comfortRadius;
+  document.getElementById('costmap-clearance-weight').value = COSTMAP_DEFAULTS.clearanceWeight;
+  document.getElementById('costmap-floor-tolerance').value = COSTMAP_DEFAULTS.floorTolerance;
+  document.getElementById('costmap-level-floor').checked = COSTMAP_DEFAULTS.levelFloor;
+  if (regenerate) openCostmap2D();
+}
+const MAP_VIEW_DEFAULTS = {
+  zMin: -0.15, zMax: 2.20, density: 100, pointSize: 0.035, opacity: 0.92,
+  heightOffset: 0.0, floorLeveling: true, floorBand: 0.08,
+  floorColor: '#2563eb', floorVisible: true,
+  colorMode: 'unitree', liveVisible: true, loadedVisible: true, cameraVisible: false
+};
+let mapViewFilters = {...MAP_VIEW_DEFAULTS};
+let realtimeScanActive = true;
+let pendingNavPreview = null;
+let navigationConfirmInFlight = false;
+
+let _ignorePoseUntil = 0;
+
+// ── Regula de orientare (o singură definiție) ─────────────────────────────
+// Lume (ROS): x înainte, y stânga, yaw în radiani, 0 = +x, pozitiv antiorar.
+// Three.js:   x_three = x_lume, z_three = -y_lume, y_three = sus.
+// Maparea (x,y)->(x,-y) e o reflexie, nu o rotație, de aici offsetul -PI/2.
+// YAW_OFFSET: dacă săgeata roșie nu coincide cu direcția reală de mers,
+// pune aici diferența în radiani. Se aplică peste tot.
+const YAW_OFFSET = 0.0;
+
+function worldToThree(x, y)   { return { tx: x, tz: -y }; }
+function threeToWorld(tx, tz) { return { x: tx, y: -tz }; }
+function yawToThreeRotation(yaw) { return (yaw + YAW_OFFSET) - Math.PI / 2; }
+
+/** Direcția unui yaw din lume, ca vector Three.js. */
+function headingVector(yaw) {
+  const a = yaw + YAW_OFFSET;
+  return new THREE.Vector3(Math.cos(a), 0, -Math.sin(a)).normalize();
+}
+
+/** Singurul loc din care se mișcă/rotește marcatorul robotului. */
+function applyRobotPose(x, y, yaw) {
+  if (!S.robotGroup) return;
+  const { tx, tz } = worldToThree(x, y);
+  S.robotGroup.position.set(tx, 0, tz);
+  S.robotGroup.rotation.y = yawToThreeRotation(yaw);
+}
+
+function initWS() {
+  S.ws = new WebSocket(WS_URL);
+  S.ws.onopen = () => document.getElementById('ws-dot').className = 'status-dot ok';
+  S.ws.onclose = (event) => {
+    document.getElementById('ws-dot').className = 'status-dot';
+    if (event.code === 1008) {
+      sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+      alert('Token dashboard invalid. Reîncarcă pagina și introdu tokenul afișat în terminal.');
+      return;
+    }
+    setTimeout(initWS, 2000);
+  };
+  S.ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type === 'init') {
+      const initialPose = msg.pose || {};
+      if ([initialPose.x, initialPose.y, initialPose.yaw].every(Number.isFinite)) {
+        S.pose = {
+          x: Number(initialPose.x), y: Number(initialPose.y),
+          yaw: Number(initialPose.yaw), source: msg.pose_source || initialPose.source
+        };
+        if (S.pose.source) latestPoseSource = S.pose.source;
+        document.getElementById('pose-x').textContent = S.pose.x.toFixed(2);
+        document.getElementById('pose-y').textContent = S.pose.y.toFixed(2);
+        document.getElementById('pose-yaw').textContent = (S.pose.yaw*180/Math.PI).toFixed(1);
+        applyRobotPose(S.pose.x, S.pose.y, S.pose.yaw);
+      }
+      setRealtimeScanUI(!msg.scan_paused);
+      if (Array.isArray(msg.slam_points)) {
+        document.getElementById('stat-pts').textContent = mapDisplaySuppressed ? '0' : msg.slam_points.length;
+        renderSlamCloud(msg.slam_points);
+      }
+    } else if (msg.type === 'pose') {
+      if (Date.now() < _ignorePoseUntil) return;
+      S.pose = msg;
+      if (msg.source) latestPoseSource = msg.source;
+      document.getElementById('pose-x').textContent = msg.x.toFixed(2);
+      document.getElementById('pose-y').textContent = msg.y.toFixed(2);
+      document.getElementById('pose-yaw').textContent = (msg.yaw*180/Math.PI).toFixed(1);
+    } else if (msg.type === 'pose_refined') {
+      const out = document.getElementById('status-result');
+      if (out) {
+        out.textContent = `✅ Poziție rafinată: x=${msg.pose.x.toFixed(2)} y=${msg.pose.y.toFixed(2)} yaw=${(msg.pose.yaw*180/Math.PI).toFixed(1)}° (score=${(msg.score || 0).toFixed(3)})`;
+      }
+    } else if (msg.type === 'localization_status') {
+      const out = document.getElementById('status-result');
+      if (out && msg.ready) {
+        out.textContent = `✅ Localizare LiDAR–PCD activă · inliers=${msg.inliers || 0} · ratio=${Number(msg.inlier_ratio || 0).toFixed(2)} · score=${Number(msg.score || 0).toFixed(3)}`;
+      }
+    } else if (msg.type === 'map_points') {
+      document.getElementById('stat-pts').textContent = mapDisplaySuppressed ? "0" : msg.points.length;
+      renderSlamCloud(msg.points);
+    } else if (msg.type === 'camera_3d_data') {
+      if (msg.video_b64) {
+        document.getElementById('live-video-feed').src = 'data:image/jpeg;base64,' + msg.video_b64;
+        document.getElementById('live-video-feed').style.display = 'block';
+        document.getElementById('video-placeholder').style.display = 'none';
+      }
+      renderRealSensePoints(msg.points);
+    } else if (msg.type === 'map_reset') {
+      S.rawSlamPoints = [];
+      S.visibleSlamPoints = 0;
+      if (S.pointsMesh) {
+        S.pointsMesh.geometry.removeAttribute('position');
+        S.pointsMesh.geometry.removeAttribute('color');
+      }
+      updateMapPointStats();
+      document.getElementById('stat-pts').textContent = "0";
+      renderDynamicCostmap([]);
+    } else if (msg.type === 'loaded_map_points') {
+      // Mesajul complet este tranzacția de înlocuire; abia acum eliminăm
+      // geometria veche. Nu există o fereastră în care un `cleared` separat
+      // poate lăsa viewerul gol dacă payloadul mare întârzie.
+      if (msg.replace && S.loadedMapMesh) {
+        const previousGeometry = S.loadedMapMesh.geometry;
+        S.loadedMapMesh.geometry = new THREE.BufferGeometry();
+        if (previousGeometry) previousGeometry.dispose();
+      }
+      renderLoadedMap(msg.points);
+      const out = document.getElementById('status-result');
+      if (out && !mapDisplaySuppressed) out.textContent = `Hartă încărcată: ${msg.points.length} puncte (${msg.path || ''})\nSetează poziția inițială pentru convergența LiDAR–PCD.`;
+    } else if (msg.type === 'loaded_map_cleared') {
+      // Acest eveniment apare și când backendul înlocuiește harta veche.
+      // Numai butonul operatorului blochează actualizările vizuale viitoare.
+      clearMapVisualization(false);
+      if (S.goalMarker) S.goalMarker.visible = false;
+      if (S.routeLine) S.routeLine.visible = false;
+      if (S.routePoints) S.routePoints.visible = false;
+      renderDynamicCostmap([]);
+    } else if (msg.type === 'teleop_error') {
+      const out = document.getElementById('status-result');
+      if (out) out.textContent = `❌ ${msg.error || 'Comanda teleop a fost respinsă'}`;
+      updateTeleopUI({vx: 0, vy: 0, vyaw: 0}, false);
+    } else if (msg.type === 'teleop_blocked') {
+      const out = document.getElementById('status-result');
+      if (out) out.textContent = `🛑 ${msg.error || 'Mișcare oprită de protecția anti-coliziune'}`;
+      updateTeleopUI({vx: 0, vy: 0, vyaw: 0}, false);
+    } else if (msg.type === 'teleop_takeover') {
+      const out = document.getElementById('status-result');
+      if (out) out.textContent = `⌨ ${msg.message || 'Autonomia a fost oprită; control manual activ.'}`;
+    } else if (msg.type === 'nav_status') {
+      if (Array.isArray(msg.dynamic_costmap)) renderDynamicCostmap(msg.dynamic_costmap);
+      if (Array.isArray(msg.path) && msg.path.length) {
+        renderNavigationPath(msg.path, msg.state === 'replanning' ? 0xff8c00 : 0x22c55e);
+      }
+      updateNavigationStatus(msg);
+    } else if (msg.type === 'nav_preview') {
+      showNavigationPreview(msg, msg.source || 'queue');
+    } else if (msg.type === 'nav_scheduled_route') {
+      pendingNavPreview = null;
+      renderNavigationPath(msg.path || [], 0x22c55e);
+      document.getElementById('nav-confirm-btn').style.display = 'none';
+      document.getElementById('nav-cancel-preview-btn').style.display = 'none';
+      document.getElementById('nav-result').textContent = `Task programat: ruta sigură a fost recalculată din poziția curentă și pornește automat (${msg.waypoints || 0} waypoint-uri).`;
+    } else if (msg.type === 'nav_task_started') {
+      document.getElementById('nav-result').textContent = 'Următorul task din scheduler a pornit.';
+    } else if (msg.type === 'nav_queue') {
+      renderNavigationQueue(msg.queue || [], msg.error || '');
+    } else if (msg.type === 'nav_task_action') {
+      const out = document.getElementById('nav-result');
+      const state = msg.state === 'running' ? 'execută' : msg.state === 'done' ? 'terminat' : msg.state;
+      out.textContent = `Task gest: ${state} — ${msg.label || msg.gesture || ''}${msg.error ? `\nMotiv: ${msg.error}` : ''}`;
+      out.style.color = msg.state === 'done' ? '#22c55e' : msg.state === 'failed' ? '#ef4444' : '#f59e0b';
+    } else if (msg.type === 'scan_state') {
+      setRealtimeScanUI(msg.active);
+    }
+  };
+}
+
+function updateNavigationStatus(msg) {
+  const out = document.getElementById('nav-result');
+  const labels = {idle:'pregătit', planning:'verifică drumul direct / calculează A*', stopped_replanning:'OPRIT — ruta veche invalidată', validating_replan:'OPRIT — validează ruta nouă', replanning:'recalculează automat și ocolește', lateral_positioning:'repoziționare laterală unică', lateral_evading:'execută pas lateral controlat', retrying_waypoint:'reîncearcă waypoint-ul — fără obstacol detectat', waiting_obstacle:'OPRIT — caută automat o ocolire sigură', waiting_sensor:'OPRIT — așteaptă senzorii', waiting_localization:'OPRIT — reconfirmă localizarea', starting:msg.executor==='local_velocity'?'așteaptă acceptarea primei comenzi locale':'așteaptă confirmarea SLAM', navigating:msg.executor==='local_velocity'?'controller local urmărește ruta':'navighează pe waypoint-uri 1102', arrived:'ajuns', failed:'eșuat', cancelled:'oprit', paused:'pauză'};
+  const pose = msg.pose ? `\nPoziție: (${msg.pose.x.toFixed(2)}, ${msg.pose.y.toFixed(2)})` : '';
+  const error = msg.error ? `\nMotiv: ${msg.error}` : '';
+  const dynamicPoints=Array.isArray(msg.dynamic_costmap) ? msg.dynamic_costmap : [];
+  const rawLidarCells=dynamicPoints.filter(point=>point.source==='lidar_raw').length;
+  const inflatedLidarCells=dynamicPoints.filter(point=>point.source==='lidar').length;
+  const comfortLidarCells=dynamicPoints.filter(point=>point.source==='lidar_comfort').length;
+  const cameraCells=dynamicPoints.filter(point=>point.source==='camera').length;
+  const dynamic=dynamicPoints.length
+    ? `\nCostmap dinamic: ${rawLidarCells} roșii formă LiDAR, ${inflatedLidarCells} portocalii blocate, ${comfortLidarCells} galbene marjă moale, ${cameraCells} cameră` : '';
+  const obstacleMode=msg.dynamic_obstacle?.mode==='lidar_shape'
+    ? `\nCluster LiDAR live: ${msg.dynamic_obstacle.shape_points || 0} celule (blochează numai dacă intersectează traseul)`
+    : msg.dynamic_obstacle?.mode==='camera_stop_only' ? '\nCamera a cerut STOP; aștept confirmarea LiDAR' : '';
+  const movement=msg.motion_mode==='lateral_left' ? '\nMișcare: pas lateral stânga'
+    : msg.motion_mode==='lateral_right' ? '\nMișcare: pas lateral dreapta'
+    : msg.motion_mode==='startup_forward' ? '\nMișcare: pornire stabilizată (0,15 m/s)' : '';
+  out.textContent = `Stare: ${labels[msg.state] || msg.state}${pose}${error}${dynamic}${obstacleMode}${movement}`;
+  out.style.color = msg.state === 'arrived' ? '#22c55e' : msg.state === 'failed' ? '#ef4444' : 'var(--text-secondary)';
+  document.getElementById('nav-start-btn').disabled = ['planning', 'stopped_replanning', 'validating_replan', 'replanning', 'lateral_positioning', 'lateral_evading', 'retrying_waypoint', 'waiting_obstacle', 'waiting_sensor', 'waiting_localization', 'starting', 'navigating'].includes(msg.state);
+}
+
+function showNavigationPreview(data, source = 'manual') {
+  pendingNavPreview = {...data, kind:'initial'};
+  renderNavigationPath(data.path, 0xfacc15);
+  if (Array.isArray(data.dynamic_costmap)) renderDynamicCostmap(data.dynamic_costmap);
+  const prefix = source === 'queue' ? 'Taskul anterior s-a terminat. Următoarea rută este pregătită.'
+    : source === 'replace' ? 'Taskul anterior a fost oprit. Ruta înlocuitoare este pregătită.'
+    : 'Ruta este doar previzualizată — robotul NU se mișcă.';
+  const activeRadius = Number(data.costmap_settings?.radius ?? 0.20);
+  const comfortRadius = Number(data.costmap_settings?.comfort_radius ?? 0.50);
+  const clearance = data.clearance_mode === 'narrow'
+    ? `\n⚠ Mod CULOAR ÎNGUST: rază hard ${activeRadius.toFixed(2)} m și viteză redusă automat.`
+    : data.clearance_mode === 'safe'
+      ? `\n✓ Mod SAFE: rază hard ${activeRadius.toFixed(2)} m · centrare pe spațiul liber · confort ${comfortRadius.toFixed(2)} m.`
+      : `\nRază hard traseu: ${activeRadius.toFixed(2)} m · confort: ${comfortRadius.toFixed(2)} m · protecție live activă.`;
+  const gestureLabels = {none:'fără gest',wave:'face cu mâna',kiss:'dă pupic',handshake:'dă noroc',clap:'bate din palme'};
+  const gesture = gestureLabels[data.gesture || 'none'] || data.gesture;
+  const executorLabel = data.executor === 'local_velocity'
+    ? 'controller local sigur (SetVelocity, fără 1102)'
+    : 'Unitree 1102 nativ';
+  const plannerLabel = data.driver === 'nav2'
+    ? `Nav2 GridBased + ${executorLabel}`
+    : `v22 A* + ${executorLabel}`;
+  const pattern = data.path_pattern?.type === 'forward_then_lateral'
+    ? `\nPattern holonomic: înainte ${Number(data.path_pattern.forward_m || 0).toFixed(2)} m, apoi pas lateral ${data.path_pattern.lateral_direction === 'left' ? 'stânga' : 'dreapta'} ${Number(data.path_pattern.lateral_m || 0).toFixed(2)} m, fără rotirea corpului.`
+    : '';
+  const nav2Detail = data.path_pattern?.type === 'nav2_gridbased'
+    ? `\nPlan Nav2: ${Number(data.path_pattern.raw_poses || 0)} poziții ROS reduse la ${Number(data.path_pattern.execution_segments || 0)} segmente sigure.`
+    : '';
+  const localCaveat = data.executor === 'local_velocity'
+    ? '\n✓ Poziție: ICP LiDAR local pe PCD + odometrie pelvis; 1102 nu este folosit. Prima probă fizică trebuie făcută pe un traseu scurt și liber.'
+    : '';
+  const executorOverride = data.executor_override
+    ? `\n⚠ Executor cerut: 1102 nativ · executor legat de rută: Controller local Nav2. Motiv: ${data.executor_override.reason}`
+    : '';
+  const goalAdjustmentDistance = Number(data.goal_adjustment_m || 0);
+  const goalAdjustment = goalAdjustmentDistance > 0.01
+    ? `\n⚠ Punctul B a fost mutat ${goalAdjustmentDistance.toFixed(2)} m în cea mai apropiată celulă sigură: (${Number(data.goal.x).toFixed(2)}, ${Number(data.goal.y).toFixed(2)}). Markerul și execuția folosesc această poziție.`
+    : '';
+  if (goalAdjustmentDistance > 0.01 && data.goal) {
+    document.getElementById('nav-goal-x').value = Number(data.goal.x).toFixed(2);
+    document.getElementById('nav-goal-y').value = Number(data.goal.y).toFixed(2);
+    if (S.goalMarker) {
+      const adjusted = worldToThree(Number(data.goal.x), Number(data.goal.y));
+      S.goalMarker.position.set(adjusted.tx, 0.04, adjusted.tz);
+      S.goalMarker.visible = true;
+    }
+  }
+  document.getElementById('nav-result').textContent = `${prefix}\nPlanner: ${plannerLabel}\nLungime: ${Number(data.length_m || 0).toFixed(2)} m · ${data.waypoints || 0} waypoint-uri${clearance}${pattern}${nav2Detail}${goalAdjustment}${executorOverride}${localCaveat}\nDupă sosire: ${gesture}.\nVerifică linia galbenă, apoi confirmă sau anulează.`;
+  document.getElementById('nav-confirm-btn').textContent = '✓ Confirmă ruta și pornește';
+  document.getElementById('nav-confirm-btn').style.display = 'block';
+  document.getElementById('nav-cancel-preview-btn').textContent = '✕ Anulează ruta';
+  document.getElementById('nav-cancel-preview-btn').style.display = 'block';
+  document.getElementById('nav-start-btn').disabled = false;
+}
+
+async function startAutonomousNavigation() {
+  const out = document.getElementById('nav-result');
+  const diagnosticsOut = document.getElementById('nav-diagnostics');
+  diagnosticsOut.style.display = 'none';
+  diagnosticsOut.textContent = '';
+  document.getElementById('nav-start-btn').disabled = true;
+  const rawX = document.getElementById('nav-goal-x').value.trim();
+  const rawY = document.getElementById('nav-goal-y').value.trim();
+  const x = Number(rawX);
+  const y = Number(rawY);
+  const yawDeg = Number(document.getElementById('nav-goal-yaw').value || 0);
+  const speed = Number(document.getElementById('linear-speed-input').value || 0.3);
+  const timeout = Number(document.getElementById('nav-timeout').value || 0);
+  const gesture = document.getElementById('nav-goal-gesture').value || 'none';
+  const driver = document.getElementById('nav-driver').value || 'legacy';
+  const executor = document.getElementById('nav-executor').value || 'native_1102';
+  let costmap;
+  try { costmap=readCostmapSettings(); }
+  catch (error) {
+    out.textContent=`Eroare costmap: ${error.message}`;
+    document.getElementById('nav-start-btn').disabled=false;
+    return;
+  }
+  if (!rawX || !rawY || !Number.isFinite(x) || !Number.isFinite(y)) {
+    out.textContent = 'Completează coordonatele X și Y.';
+    document.getElementById('nav-start-btn').disabled = false;
+    return;
+  }
+  out.textContent = driver === 'nav2'
+    ? 'Nav2 construiește costmapul și traseul GridBased. Robotul nu se mișcă...'
+    : 'Verific mai întâi drumul direct; folosesc A* numai dacă este blocat. Robotul nu se mișcă...';
+  const response = await fetch(API_BASE + '/api/nav/preview', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({x,y,yaw:yawDeg*Math.PI/180,speed,timeout,gesture,driver,executor,costmap:{
+      resolution:costmap.resolution,min_points:costmap.minPoints,min_z:costmap.minZ,max_z:costmap.maxZ,
+      radius:costmap.radius,comfort_radius:costmap.comfortRadius,clearance_weight:costmap.clearanceWeight,
+      floor_tolerance:costmap.floorTolerance,level_floor:costmap.levelFloor
+    }})
+  });
+  const data = await response.json();
+  if (!data.success) {
+    out.textContent = `Eroare: ${data.error || 'ruta nu a putut fi calculată'}`;
+    diagnosticsOut.textContent = `Diagnostic planificare:\n${JSON.stringify(data.diagnostics || {}, null, 2)}`;
+    diagnosticsOut.style.display = 'block';
+    document.getElementById('nav-start-btn').disabled = false;
+    return;
+  }
+  showNavigationPreview(data, 'manual');
+  diagnosticsOut.textContent = `Plan ${data.planner || data.driver}:\n${JSON.stringify({driver:data.driver,executor:data.executor,start:data.start_pose,goal:data.goal,length_m:data.length_m,gesture:data.gesture,path_pattern:data.path_pattern,clearance_mode:data.clearance_mode,costmap:data.costmap_settings,floor_plane:data.floor_plane,path:data.path},null,2)}`;
+  diagnosticsOut.style.display = 'block';
+}
+
+let navigationSensorRefreshInFlight = false;
+async function refreshNavigationSensorReadiness() {
+  if (navigationSensorRefreshInFlight) return;
+  navigationSensorRefreshInFlight = true;
+  const element = document.getElementById('nav-sensor-readiness');
+  try {
+    const driver = document.getElementById('nav-driver').value || 'legacy';
+    const executor = document.getElementById('nav-executor').value || 'native_1102';
+    const response = await fetch(API_BASE + `/api/nav/preflight?driver=${encodeURIComponent(driver)}&executor=${encodeURIComponent(executor)}`);
+    const data = await response.json();
+    const sensors = data.obstacle_sensors || {};
+    const cameraAge = Number.isFinite(sensors.camera_age) ? `${sensors.camera_age.toFixed(1)}s` : 'niciodată';
+    const lidarAge = Number.isFinite(sensors.lidar_age) ? `${sensors.lidar_age.toFixed(1)}s` : 'niciodată';
+    const camera = sensors.camera_fresh ? `✓ RealSense ${cameraAge}` : `✕ RealSense ${cameraAge}`;
+    const lidarSource = sensors.lidar_source ? ` [${sensors.lidar_source}]` : '';
+    const lidar = sensors.lidar_fresh
+      ? `✓ LiDAR${lidarSource} ${lidarAge}`
+      : `✕ LiDAR${lidarSource} ${lidarAge}`;
+    const ready = Boolean(sensors.camera_fresh && sensors.lidar_fresh);
+    const nav2Selected = driver === 'nav2';
+    const nav2 = data.nav2 || {};
+    const nav2Ready = !nav2Selected || Boolean(
+      nav2.planner_ready && nav2.tf_ready && nav2.map_published
+    );
+    const nav2Label = nav2Selected
+      ? ` · ${nav2.planner_ready ? '✓' : '✕'} Nav2 planner · ${nav2.tf_ready ? '✓' : '✕'} TF · ${nav2.map_published ? '✓' : '✕'} hartă Nav2`
+      : '';
+    const sources = data.localization_sources || {};
+    const displaySource = sources.display?.source || 'niciuna';
+    const nativeReady = Boolean(sources.unitree_1102?.ready);
+    const nativeController = sources.unitree_1102?.controller || 'necunoscut';
+    const localLidar = sources.local_lidar || {};
+    const anchorCorrection = localLidar.anchor_correction || null;
+    const anchorCorrectionLabel = anchorCorrection
+      ? ` · corecție inițială ${Number(anchorCorrection.distance || 0).toFixed(2)}m/${(Number(anchorCorrection.dyaw || 0) * 180 / Math.PI).toFixed(1)}°`
+      : '';
+    const localLidarLabel = executor === 'native_1102'
+      ? 'ICP LiDAR local: rezervă (1102 folosește pos_info nativ)'
+      : (localLidar.ready
+          ? `✓ ICP LiDAR score=${Number(localLidar.score || 0).toFixed(3)} inliers=${localLidar.inliers || 0}${anchorCorrectionLabel}`
+          : `✕ ICP LiDAR ${localLidar.error || 'neinițializat'}`);
+    const localCoreReady = Boolean(
+      data.checks?.localization_fresh && data.checks?.local_velocity_sdk_available
+    );
+    const selectedExecutorReady = executor === 'local_velocity'
+      ? Boolean(localCoreReady && data.checks?.fsm_locomotion_ready)
+      : nativeReady;
+    const fsmId = data.robot?.fsm_id;
+    const fsmLabel = executor === 'local_velocity'
+      ? ` · FSM ${fsmId === null || fsmId === undefined ? '?' : fsmId} ${data.checks?.fsm_locomotion_ready ? '✓' : '✕'}`
+      : '';
+    const executorState = executor === 'local_velocity'
+      ? (localCoreReady
+          ? (data.checks?.fsm_locomotion_ready
+              ? 'local sigur ✓'
+              : `localizare+SDK ✓ · mișcare blocată până la RUN (FSM ${fsmId ?? '?'})`)
+          : 'local sigur ✕')
+      : `1102 ${selectedExecutorReady ? '✓' : '✕'}`;
+    element.textContent = `Protecție autonomie: ${camera} · ${lidar}${nav2Label}\n` +
+      `Poziție UI: ${displaySource} · ${localLidarLabel}\n1102 nativ: ${nativeReady ? '✓ poziție nativă recentă' : `✕ ${nativeController}`} · ` +
+      `executor ales: ${executorState}${fsmLabel}`;
+    element.style.whiteSpace = 'pre-line';
+    const fullyReady = ready && nav2Ready && selectedExecutorReady;
+    element.style.color = fullyReady ? '#22c55e' : '#ef4444';
+    element.style.borderColor = fullyReady ? '#166534' : '#7f1d1d';
+  } catch (error) {
+    element.textContent = `Protecție autonomie: backend indisponibil (${error.message || error})`;
+    element.style.color = '#ef4444';
+    element.style.borderColor = '#7f1d1d';
+  } finally {
+    navigationSensorRefreshInFlight = false;
+  }
+}
+
+async function confirmAutonomousNavigation() {
+  const out = document.getElementById('nav-result');
+  if (!pendingNavPreview) {
+    out.textContent = 'Nu există o rută valabilă de confirmat. Previzualizează din nou.';
+    return;
+  }
+  if (navigationConfirmInFlight) return;
+  const requestPreview = {...pendingNavPreview};
+  const confirmButton = document.getElementById('nav-confirm-btn');
+  navigationConfirmInFlight = true;
+  confirmButton.disabled = true;
+  try {
+    const driver = requestPreview.driver || document.getElementById('nav-driver').value || 'legacy';
+    const executor = requestPreview.executor || document.getElementById('nav-executor').value || 'native_1102';
+    const preflightResponse = await fetch(API_BASE + `/api/nav/preflight?wait_s=2.5&driver=${encodeURIComponent(driver)}&executor=${encodeURIComponent(executor)}`);
+    const preflight = await preflightResponse.json();
+    if (!preflight.success) {
+      const labels = {
+        map_loaded: 'harta PCD încărcată',
+        localization_mode: 'modul localization activ',
+        localization_fresh: 'odometria/localizarea recentă',
+        unitree_pose_ready: 'poziția nativă Unitree disponibilă',
+        camera_obstacle_sensor_fresh: 'RealSense depth recent',
+        lidar_obstacle_sensor_fresh: 'LiDAR SLAM live recent',
+        obstacle_sensors_fresh: 'RealSense și LiDAR live simultan',
+        slam_native_navigation: 'navigarea SLAM nativă',
+        slam_telemetry_fresh: 'telemetria SLAM recentă',
+        nav2_adapter_available: 'adaptorul Nav2 disponibil',
+        nav2_planner_ready: 'planner_server Nav2 activ',
+        nav2_tf_ready: 'transformările Nav2 map→odom→robot recente',
+        nav2_map_published: 'harta publicată către Nav2',
+        local_velocity_sdk_available: 'SDK-ul local SetVelocity disponibil',
+        fsm_locomotion_ready: `FSM locomotion pregătit (curent ${preflight.robot?.fsm_id ?? '?'}; folosește Wake-up/Start înainte de confirmare)`,
+        local_lidar_localization_ready: 'localizarea LiDAR locală convergentă pe PCD'
+      };
+      const failed = Object.entries(preflight.checks || {}).filter(([, ok]) => !ok);
+      const hasSpecificSensorFailure = failed.some(([name]) =>
+        name === 'camera_obstacle_sensor_fresh' || name === 'lidar_obstacle_sensor_fresh');
+      const missing = failed
+        .filter(([name]) => !(name === 'obstacle_sensors_fresh' && hasSpecificSensorFailure))
+        .map(([name]) => labels[name] || name);
+      out.textContent = `Nu pornesc robotul. Preflight incomplet: ${missing.join(', ') || 'stare necunoscută'}. Ruta rămâne pregătită.`;
+      navigationConfirmInFlight = false;
+      confirmButton.disabled = false;
+      return;
+    }
+  } catch (error) {
+    out.textContent = `Nu pornesc robotul: preflight-ul nu a răspuns (${error.message || error}). Ruta rămâne pregătită.`;
+    navigationConfirmInFlight = false;
+    confirmButton.disabled = false;
+    return;
+  }
+  out.textContent = requestPreview.executor === 'local_velocity'
+    ? 'Confirm ruta și aștept acceptarea primei comenzi de viteză a controllerului local sigur...'
+    : requestPreview.driver === 'nav2'
+      ? 'Confirm planul Nav2 și pornesc segmentele prin Unitree 1102...'
+      : 'Confirm ruta v22 și pornesc waypoint-urile 1102...';
+  let data;
+  try {
+    const response = await fetch(API_BASE + '/api/nav/goal', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({preview_id: requestPreview.preview_id})
+    });
+    data = await response.json();
+  } catch (error) {
+    out.textContent = `Confirmarea nu a ajuns la backend: ${error.message || error}`;
+    navigationConfirmInFlight = false;
+    confirmButton.disabled = false;
+    return;
+  }
+  if (!data.success) {
+    out.textContent = `Confirmarea a fost refuzată: ${data.error || 'eroare necunoscută'}`;
+    pendingNavPreview = null;
+    navigationConfirmInFlight = false;
+    confirmButton.style.display = 'none';
+    confirmButton.disabled = false;
+    document.getElementById('nav-cancel-preview-btn').style.display = 'none';
+    document.getElementById('nav-start-btn').disabled = false;
+    return;
+  }
+  pendingNavPreview = null;
+  navigationConfirmInFlight = false;
+  confirmButton.style.display = 'none';
+  confirmButton.disabled = false;
+  document.getElementById('nav-cancel-preview-btn').style.display = 'none';
+  out.textContent = data.executor === 'local_velocity'
+    ? `Ruta confirmată. Aștept acceptarea primei comenzi locale; robotul nu este raportat ca pornit încă. La obstacol aplică STOP, replănuiește automat cu plannerul ales și reia numai după validarea rutei noi.${data.flight_log ? `\nJurnal: ${data.flight_log}` : ''}`
+    : `Ruta confirmată. Aștept acceptarea primei comenzi Unitree 1102; robotul nu este raportat ca pornit încă. Ocolirile ulterioare sunt automate.${data.flight_log ? `\nJurnal: ${data.flight_log}` : ''}`;
+  document.getElementById('nav-start-btn').disabled = true;
+}
+
+async function clearNavigationPreview(notifyServer = false) {
+  navigationConfirmInFlight = false;
+  pendingNavPreview = null;
+  if (S.routeLine) S.routeLine.visible = false;
+  if (S.routePoints) S.routePoints.visible = false;
+  renderDynamicCostmap([]);
+  document.getElementById('nav-confirm-btn').style.display = 'none';
+  document.getElementById('nav-confirm-btn').disabled = false;
+  document.getElementById('nav-cancel-preview-btn').style.display = 'none';
+  document.getElementById('nav-start-btn').disabled = false;
+  if (notifyServer) {
+    await fetch(API_BASE + '/api/nav/preview/cancel', {method:'POST'});
+    document.getElementById('nav-result').textContent = 'Ruta previzualizată a fost anulată.';
+  }
+}
+
+async function clearNavigationGoal() {
+  await clearNavigationPreview(true);
+  document.getElementById('nav-goal-x').value = '';
+  document.getElementById('nav-goal-y').value = '';
+  if (S.goalMarker) S.goalMarker.visible = false;
+  document.getElementById('nav-result').textContent =
+    'Punctul B și ruta previzualizată au fost șterse. Harta PCD nu a fost modificată.';
+}
+
+async function downloadNavigationFlightLog() {
+  const out = document.getElementById('nav-result');
+  try {
+    const response = await fetch(API_BASE + '/api/nav/flight_log/download');
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try { message = (await response.json()).error || message; } catch (_) {}
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = match ? match[1] : 'navigation_flight_log.jsonl';
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    out.textContent = `Jurnal descărcat: ${filename}`;
+  } catch (error) {
+    out.textContent = `Jurnal indisponibil: ${error.message || error}`;
+  }
+}
+
+async function stopAutonomousNavigation() {
+  const response = await fetch(API_BASE + '/api/nav/stop', {method:'POST'});
+  const data = await response.json();
+  document.getElementById('nav-result').textContent = data.success === false
+    ? `STOP a eșuat: ${data.error || ''}` : 'Stare: oprit';
+  document.getElementById('nav-start-btn').disabled = false;
+  await clearNavigationPreview(false);
+  renderNavigationQueue([]);
+}
+
+function navigationGoalFromInputs() {
+  const rawX = document.getElementById('nav-goal-x').value.trim();
+  const rawY = document.getElementById('nav-goal-y').value.trim();
+  const x = Number(rawX);
+  const y = Number(rawY);
+  const yaw = Number(document.getElementById('nav-goal-yaw').value || 0) * Math.PI / 180;
+  const speed = Number(document.getElementById('linear-speed-input').value || 0.3);
+  const timeout = Number(document.getElementById('nav-timeout').value || 0);
+  const gesture = document.getElementById('nav-goal-gesture').value || 'none';
+  const driver = document.getElementById('nav-driver').value || 'legacy';
+  const executor = document.getElementById('nav-executor').value || 'native_1102';
+  if (!rawX || !rawY || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const settings=readCostmapSettings();
+  return {x,y,yaw,speed,timeout,gesture,driver,executor,costmap:{resolution:settings.resolution,min_points:settings.minPoints,
+    min_z:settings.minZ,max_z:settings.maxZ,radius:settings.radius,
+    comfort_radius:settings.comfortRadius,clearance_weight:settings.clearanceWeight,
+    floor_tolerance:settings.floorTolerance,level_floor:settings.levelFloor}};
+}
+
+async function queueNavigationGoal(action) {
+  const out = document.getElementById('nav-result');
+  let goal;
+  try { goal=navigationGoalFromInputs(); }
+  catch (error) { out.textContent=`Eroare costmap: ${error.message}`; return; }
+  if (!goal) {
+    out.textContent = 'Completează coordonatele X și Y pentru punctul nou.';
+    return;
+  }
+  if (action === 'replace' && !window.confirm('Oprim taskul curent și îl înlocuim cu acest punct?')) return;
+  const response = await fetch(API_BASE + '/api/nav/queue', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({...goal, action})
+  });
+  const data = await response.json();
+  if (!data.success) {
+    out.textContent = `Eroare coadă: ${data.error || 'operația a eșuat'}`;
+    return;
+  }
+  renderNavigationQueue(data.queue || []);
+  if (data.preview_id) showNavigationPreview(data, data.action === 'replace' ? 'replace' : 'queue');
+  else out.textContent = `Punct adăugat în coadă. Mai sunt ${(data.queue || []).length} taskuri.`;
+}
+
+function renderNavigationQueue(queue, error = '') {
+  const container = document.getElementById('nav-queue');
+  container.replaceChildren();
+  const title = document.createElement('div');
+  title.textContent = queue.length ? `Coadă: ${queue.length} punct(e)` : 'Coadă: goală';
+  container.appendChild(title);
+  queue.forEach((item, index) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; justify-content:space-between; gap:4px; margin-top:4px; color:#cbd5e1;';
+    const label = document.createElement('span');
+    const gestureLabels = {none:'',wave:' → 👋',kiss:' → 😘',handshake:' → 🤝',clap:' → 👏'};
+    const planner = item.driver === 'nav2' ? 'Nav2' : 'v22';
+    label.textContent = `${index + 1}. [${planner}] (${Number(item.x).toFixed(2)}, ${Number(item.y).toFixed(2)})${gestureLabels[item.gesture || 'none'] || ''}`;
+    const remove = document.createElement('button');
+    remove.textContent = 'șterge';
+    remove.style.cssText = 'background:#7f1d1d; color:white; border:0; border-radius:3px; cursor:pointer;';
+    remove.onclick = () => removeQueuedGoal(item.id);
+    row.append(label, remove);
+    container.appendChild(row);
+  });
+  if (error) {
+    const message = document.createElement('div');
+    message.style.color = '#ef4444';
+    message.textContent = error;
+    container.appendChild(message);
+  }
+}
+
+async function removeQueuedGoal(id) {
+  const response = await fetch(API_BASE + `/api/nav/queue/${encodeURIComponent(id)}`, {method:'DELETE'});
+  const data = await response.json();
+  renderNavigationQueue(data.queue || []);
+}
+
+async function refreshNavigationQueue() {
+  try {
+    const response = await fetch(API_BASE + '/api/nav/queue');
+    const data = await response.json();
+    if (data.success) renderNavigationQueue(data.queue || []);
+  } catch (_) {}
+}
+
+function makeSolidRobotMaterial(options) {
+  return new THREE.MeshStandardMaterial({
+    ...options,
+    transparent: false,
+    opacity: 1,
+    side: THREE.DoubleSide,
+    depthTest: true,
+    depthWrite: true
+  });
+}
+
+function buildFallbackG1() {
+  const group = new THREE.Group();
+  const light = makeSolidRobotMaterial({color:0xcbd5e1, roughness:0.55, metalness:0.2});
+  const dark = makeSolidRobotMaterial({color:0x1f2937, roughness:0.65, metalness:0.15});
+  const part = (geometry, material, position, rotation = [0, 0, 0]) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(...position);
+    mesh.rotation.set(...rotation);
+    group.add(mesh);
+  };
+  part(new THREE.BoxGeometry(0.34, 0.22, 0.22), dark, [0, 0.72, 0]);
+  part(new THREE.BoxGeometry(0.43, 0.43, 0.22), light, [0, 1.01, 0]);
+  part(new THREE.SphereGeometry(0.16, 16, 12), dark, [0, 1.34, -0.01]);
+  [-0.12, 0.12].forEach(x => {
+    part(new THREE.CapsuleGeometry(0.065, 0.31, 6, 10), light, [x, 0.43, 0]);
+    part(new THREE.CapsuleGeometry(0.055, 0.30, 6, 10), dark, [x, 0.13, -0.015]);
+    part(new THREE.BoxGeometry(0.13, 0.06, 0.25), dark, [x, 0.015, -0.07]);
+  });
+  [-0.29, 0.29].forEach(x => {
+    part(new THREE.CapsuleGeometry(0.05, 0.29, 6, 10), light, [x, 0.93, 0], [0, 0, x < 0 ? -0.12 : 0.12]);
+    part(new THREE.CapsuleGeometry(0.045, 0.27, 6, 10), dark, [x * 1.08, 0.65, 0]);
+  });
+  return group;
+}
+
+function parseBinarySTL(buffer) {
+  const view = new DataView(buffer);
+  if (buffer.byteLength < 84) throw new Error('STL incomplet');
+  const count = view.getUint32(80, true);
+  if (buffer.byteLength < 84 + count * 50) throw new Error('STL binar invalid');
+  const positions = new Float32Array(count * 9);
+  const normals = new Float32Array(count * 9);
+  let offset = 84;
+  for (let triangle = 0; triangle < count; triangle++, offset += 50) {
+    const nx = view.getFloat32(offset, true);
+    const ny = view.getFloat32(offset + 4, true);
+    const nz = view.getFloat32(offset + 8, true);
+    for (let vertex = 0; vertex < 3; vertex++) {
+      const source = offset + 12 + vertex * 12;
+      const target = triangle * 9 + vertex * 3;
+      positions[target] = view.getFloat32(source, true);
+      positions[target + 1] = view.getFloat32(source + 4, true);
+      positions[target + 2] = view.getFloat32(source + 8, true);
+      normals[target] = nx;
+      normals[target + 1] = ny;
+      normals[target + 2] = nz;
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+async function loadG1RobotModel() {
+  const definitions = [
+    ['/static/assets/g1/g1_light.stl', makeSolidRobotMaterial({color:0xbfc7ce, roughness:0.48, metalness:0.28})],
+    ['/static/assets/g1/g1_dark.stl', makeSolidRobotMaterial({color:0x20262d, roughness:0.62, metalness:0.18})]
+  ];
+  const meshes = await Promise.all(definitions.map(async ([url, material]) => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+    return new THREE.Mesh(parseBinarySTL(await response.arrayBuffer()), material);
+  }));
+  const model = new THREE.Group();
+  meshes.forEach(mesh => model.add(mesh));
+  model.name = 'Unitree G1 official mesh';
+  S.robotVisual = model;
+  S.robotGroup.add(model);
+  if (S.robotFallback) S.robotFallback.visible = false;
+}
+
+function init3D() {
+  const container = document.getElementById('canvas-3d');
+  const area = document.getElementById('view-3d');
+  
+  S.scene = new THREE.Scene(); S.scene.background = new THREE.Color(0x050810);
+  S.camera = new THREE.PerspectiveCamera(60, area.clientWidth / area.clientHeight, 0.1, 600);
+  S.camera.position.set(0, 10, 14);
+  
+  S.renderer = new THREE.WebGLRenderer({ canvas: container, antialias: true });
+  S.renderer.setSize(area.clientWidth, area.clientHeight);
+  
+  S.controls = new THREE.OrbitControls(S.camera, container);
+  S.scene.add(new THREE.GridHelper(60, 60, 0x1e3a5f, 0x0f1f3a));
+  S.scene.add(new THREE.HemisphereLight(0xdbeafe, 0x111827, 1.8));
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.6);
+  keyLight.position.set(4, 8, 3);
+  S.scene.add(keyLight);
+
+  const slamGeo = new THREE.BufferGeometry();
+  const slamMat = new THREE.PointsMaterial({ size: mapViewFilters.pointSize, vertexColors: true, sizeAttenuation: true, opacity: mapViewFilters.opacity, transparent: true });
+  S.pointsMesh = new THREE.Points(slamGeo, slamMat); S.scene.add(S.pointsMesh);
+
+  // Mesh separat pentru harta încărcată; folosește aceeași paletă configurabilă.
+  const loadedGeo = new THREE.BufferGeometry();
+  const loadedMat = new THREE.PointsMaterial({ size: mapViewFilters.pointSize, vertexColors: true, sizeAttenuation: true, opacity: mapViewFilters.opacity, transparent: true });
+  S.loadedMapMesh = new THREE.Points(loadedGeo, loadedMat); S.scene.add(S.loadedMapMesh);
+
+  const camGeo = new THREE.BufferGeometry();
+  const camMat = new THREE.PointsMaterial({ size: 0.065, vertexColors: true, sizeAttenuation: true });
+  S.cameraPointsMesh = new THREE.Points(camGeo, camMat);
+  S.cameraPointsMesh.visible = mapViewFilters.cameraVisible;
+  S.scene.add(S.cameraPointsMesh);
+
+  // CONSTRUIRE ANSAMBLU ROBOT
+  S.robotGroup = new THREE.Group();
+  S.robotFallback = buildFallbackG1();
+  S.robotGroup.add(S.robotFallback);
+
+  // Săgeata ROȘIE: orientarea curentă a robotului, din odometrie.
+  // "Înainte" în sistemul local al grupului este -Z; combinat cu
+  // yawToThreeRotation() dă direcția corectă în lume.
+  S.headingArrow = new THREE.ArrowHelper(
+    new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 0.95, 0),
+    1.1, 0xff3b30, 0.30, 0.20
+  );
+  S.robotGroup.add(S.headingArrow);
+  S.scene.add(S.robotGroup);
+  loadG1RobotModel().catch(error => console.warn('Modelul G1 nu s-a încărcat; folosesc fallback-ul:', error));
+
+  // Săgeata VERDE: orientarea pe care o setezi tu, trasă cu mouse-ul.
+  S.poseArrow = new THREE.ArrowHelper(
+    new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0.05, 0),
+    1.0, 0x22c55e, 0.28, 0.20
+  );
+  S.poseArrow.visible = false;
+  S.scene.add(S.poseArrow);
+
+  const goalGeometry = new THREE.RingGeometry(0.22, 0.32, 32);
+  const goalMaterial = new THREE.MeshBasicMaterial({color: 0x22c55e, side: THREE.DoubleSide});
+  S.goalMarker = new THREE.Mesh(goalGeometry, goalMaterial);
+  S.goalMarker.rotation.x = -Math.PI / 2;
+  S.goalMarker.position.y = 0.04;
+  S.goalMarker.visible = false;
+  S.scene.add(S.goalMarker);
+
+  const routeMaterial = new THREE.LineBasicMaterial({color: 0xfacc15, linewidth: 3});
+  S.routeLine = new THREE.Line(new THREE.BufferGeometry(), routeMaterial);
+  S.routeLine.visible = false;
+  S.scene.add(S.routeLine);
+  const routePointMaterial = new THREE.PointsMaterial({color: 0xffffff, size: 0.16, sizeAttenuation: true});
+  S.routePoints = new THREE.Points(new THREE.BufferGeometry(), routePointMaterial);
+  S.routePoints.visible = false;
+  S.scene.add(S.routePoints);
+
+  const dynamicCostmapMaterial = new THREE.PointsMaterial({
+    color: 0xffffff,vertexColors:true,size: 0.20, sizeAttenuation: true,
+    transparent: true, opacity: 0.82
+  });
+  S.dynamicCostmapMesh = new THREE.Points(new THREE.BufferGeometry(), dynamicCostmapMaterial);
+  S.dynamicCostmapMesh.visible = false;
+  S.scene.add(S.dynamicCostmapMesh);
+
+  window.addEventListener('resize', () => {
+    S.camera.aspect = area.clientWidth / area.clientHeight; S.camera.updateProjectionMatrix();
+    S.renderer.setSize(area.clientWidth, area.clientHeight);
+  });
+
+  animate();
+}
+
+function hexToRgb01(hex) {
+  const value = String(hex || '#2563eb').replace('#', '');
+  const parsed = Number.parseInt(value.length === 3 ? value.split('').map(c => c + c).join('') : value, 16);
+  return [((parsed >> 16) & 255) / 255, ((parsed >> 8) & 255) / 255, (parsed & 255) / 255];
+}
+
+function mapPointColor(z, isFloor = false) {
+  if (isFloor) return hexToRgb01(mapViewFilters.floorColor);
+  const span = Math.max(0.05, mapViewFilters.zMax - mapViewFilters.zMin);
+  const t = Math.max(0, Math.min(1, (z - mapViewFilters.zMin) / span));
+  if (mapViewFilters.colorMode === 'height') {
+    return [0.03 + 0.10*t, 0.35 + 0.55*t, 0.95];
+  }
+  if (mapViewFilters.colorMode === 'amber') return [0.96, 0.68, 0.30];
+
+  // Paletă aproximată după aplicația Unitree: podea roșiatică, volum verde-galben, muchii înalte roz.
+  const stops = [
+    [0.00, [0.91, 0.34, 0.45]],
+    [0.18, [0.94, 0.54, 0.39]],
+    [0.36, [0.82, 0.78, 0.36]],
+    [0.58, [0.20, 0.73, 0.40]],
+    [0.78, [0.73, 0.76, 0.35]],
+    [1.00, [0.88, 0.27, 0.45]]
+  ];
+  for (let i = 1; i < stops.length; i++) {
+    if (t <= stops[i][0]) {
+      const [ta, ca] = stops[i - 1];
+      const [tb, cb] = stops[i];
+      const u = (t - ta) / Math.max(0.0001, tb - ta);
+      return ca.map((value, channel) => value + (cb[channel] - value) * u);
+    }
+  }
+  return stops[stops.length - 1][1];
+}
+
+function solvePlaneLeastSquares(points) {
+  let sx=0, sy=0, sz=0, sxx=0, syy=0, sxy=0, sxz=0, syz=0;
+  for (const p of points) {
+    sx += p.x; sy += p.y; sz += p.z;
+    sxx += p.x*p.x; syy += p.y*p.y; sxy += p.x*p.y;
+    sxz += p.x*p.z; syz += p.y*p.z;
+  }
+  const m = [[sxx,sxy,sx,sxz],[sxy,syy,sy,syz],[sx,sy,points.length,sz]];
+  for (let col=0; col<3; col++) {
+    let pivot=col;
+    for (let row=col+1; row<3; row++) if (Math.abs(m[row][col]) > Math.abs(m[pivot][col])) pivot=row;
+    if (Math.abs(m[pivot][col]) < 1e-9) return null;
+    [m[col],m[pivot]]=[m[pivot],m[col]];
+    const divisor=m[col][col];
+    for (let j=col; j<4; j++) m[col][j]/=divisor;
+    for (let row=0; row<3; row++) {
+      if (row===col) continue;
+      const factor=m[row][col];
+      for (let j=col; j<4; j++) m[row][j]-=factor*m[col][j];
+    }
+  }
+  return {a:m[0][3], b:m[1][3], c:m[2][3]};
+}
+
+function estimateFloorPlane(pointsArr) {
+  if (!Array.isArray(pointsArr) || pointsArr.length < 200) return null;
+  const step = Math.max(1, Math.floor(pointsArr.length / 5000));
+  const sample=[];
+  for (let i=0; i<pointsArr.length && sample.length<5000; i+=step) {
+    const p=pointsArr[i], x=Number(p.x), y=Number(p.y), z=Number(p.z);
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) sample.push({x,y,z});
+  }
+  if (sample.length < 200) return null;
+
+  // RANSAC caută planul aproape orizontal care explică cele mai multe puncte.
+  // Astfel nu presupunem că podeaua are un Z constant înainte de nivelare.
+  let seed = (sample.length * 2654435761) >>> 0;
+  const randomIndex = () => { seed=(1664525*seed+1013904223)>>>0; return seed%sample.length; };
+  const threshold=Math.max(0.045, Math.min(0.10, mapViewFilters.floorBand || 0.08));
+  let best=null, bestInliers=[];
+  for (let iteration=0; iteration<140; iteration++) {
+    const p1=sample[randomIndex()], p2=sample[randomIndex()], p3=sample[randomIndex()];
+    const det=(p1.x-p3.x)*(p2.y-p3.y)-(p2.x-p3.x)*(p1.y-p3.y);
+    if (Math.abs(det)<0.04) continue;
+    const a=((p1.z-p3.z)*(p2.y-p3.y)-(p2.z-p3.z)*(p1.y-p3.y))/det;
+    const b=((p1.x-p3.x)*(p2.z-p3.z)-(p2.x-p3.x)*(p1.z-p3.z))/det;
+    if (Math.hypot(a,b)>0.60) continue;
+    const c=p1.z-a*p1.x-b*p1.y;
+    const inliers=[];
+    for (const p of sample) if (Math.abs(p.z-(a*p.x+b*p.y+c))<=threshold) inliers.push(p);
+    if (inliers.length > bestInliers.length) { best={a,b,c}; bestInliers=inliers; }
+  }
+  if (!best || bestInliers.length < Math.max(100, sample.length*0.06)) return null;
+  const refined=solvePlaneLeastSquares(bestInliers) || best;
+  const inliers=sample.filter(p => Math.abs(p.z-(refined.a*p.x+refined.b*p.y+refined.c))<=threshold);
+  const rms=Math.sqrt(inliers.reduce((sum,p) => {
+    const error=p.z-(refined.a*p.x+refined.b*p.y+refined.c); return sum+error*error;
+  },0)/Math.max(1,inliers.length));
+  return {...refined, tiltDeg:Math.atan(Math.hypot(refined.a,refined.b))*180/Math.PI,
+    inliers:inliers.length, total:sample.length, rms};
+}
+
+function updateFloorStatus() {
+  const el=document.getElementById('map-floor-status');
+  if (!el) return;
+  if (!mapViewFilters.floorLeveling) { el.textContent='Nivelarea este oprită; se afișează Z-ul brut din PCD.'; return; }
+  const p=S.floorPlane;
+  if (!p) { el.textContent='Nu am putut identifica sigur planul podelei.'; return; }
+  el.textContent=`Plan detectat: înclinare ${p.tiltDeg.toFixed(1)}°, ${p.inliers}/${p.total} puncte eșantionate, eroare ${Math.round(p.rms*1000)} mm.`;
+}
+
+function autoAlignMapToFloor(pointsArr, force=false) {
+  if (!mapViewFilters.floorLeveling || !Array.isArray(pointsArr) || pointsArr.length<200) return;
+  const first=pointsArr[0] || {}, last=pointsArr[pointsArr.length-1] || {};
+  const signature=`${pointsArr.length}:${Number(first.x).toFixed(2)}:${Number(last.y).toFixed(2)}`;
+  if (!force && S.floorPlane && S.floorPlaneSignature===signature) return;
+  const plane=estimateFloorPlane(pointsArr);
+  if (!plane) { updateFloorStatus(); return; }
+  S.floorPlane=plane; S.floorPlaneSource=pointsArr; S.floorPlaneSignature=signature;
+  updateFloorStatus();
+}
+
+function renderFilteredMapLayer(mesh, pointsArr) {
+  if (!mesh) return 0;
+  const positions = [];
+  const colors = [];
+  const density = Math.max(10, Math.min(100, mapViewFilters.density));
+  for (let i = 0; i < pointsArr.length; i++) {
+    const pt = pointsArr[i];
+    const x=Number(pt.x), y=Number(pt.y), z=Number(pt.z);
+    if (![x,y,z].every(Number.isFinite)) continue;
+    const planeZ = mapViewFilters.floorLeveling && S.floorPlane
+      ? S.floorPlane.a*x + S.floorPlane.b*y + S.floorPlane.c : 0;
+    const visualHeight = mapViewFilters.floorLeveling && S.floorPlane ? z-planeZ : z;
+    if (visualHeight < mapViewFilters.zMin || visualHeight > mapViewFilters.zMax) continue;
+    const isFloor = Boolean(mapViewFilters.floorLeveling && S.floorPlane && Math.abs(visualHeight)<=mapViewFilters.floorBand);
+    if (isFloor && !mapViewFilters.floorVisible) continue;
+    if (((i * 97) % 100) >= density) continue;
+    // Se corectează doar înălțimea. X/Y rămân native pentru navigare și click pe hartă.
+    positions.push(x, visualHeight + mapViewFilters.heightOffset, -y);
+    colors.push(...mapPointColor(visualHeight, isFloor));
+  }
+  mesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  mesh.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  mesh.geometry.setDrawRange(0, Infinity);
+  mesh.geometry.computeBoundingSphere();
+  return positions.length / 3;
+}
+
+function clearMapVisualization(suppressUpdates = true) {
+  if (suppressUpdates) {
+    mapDisplaySuppressed = true;
+    sessionStorage.setItem(MAP_DISPLAY_STORAGE_KEY, '1');
+  }
+  S.rawSlamPoints = [];
+  S.rawLoadedMapPoints = [];
+  S.visibleSlamPoints = 0;
+  S.visibleLoadedMapPoints = 0;
+  S.floorPlane = null;
+  S.floorPlaneSignature = null;
+  S.floorPlaneSource = null;
+  for (const mesh of [S.pointsMesh, S.loadedMapMesh]) {
+    if (!mesh) continue;
+    const previousGeometry = mesh.geometry;
+    mesh.geometry = new THREE.BufferGeometry();
+    if (previousGeometry) previousGeometry.dispose();
+    mesh.geometry.setDrawRange(0, 0);
+    mesh.visible = false;
+  }
+  document.getElementById('stat-pts').textContent = '0';
+  renderDynamicCostmap([]);
+  updateMapPointStats();
+  updateFloorStatus();
+}
+
+function enableMapVisualization() {
+  mapDisplaySuppressed = false;
+  sessionStorage.removeItem(MAP_DISPLAY_STORAGE_KEY);
+  if (S.pointsMesh) S.pointsMesh.visible = !mapDisplaySuppressed && mapViewFilters.liveVisible;
+  if (S.loadedMapMesh) S.loadedMapMesh.visible = !mapDisplaySuppressed && mapViewFilters.loadedVisible;
+}
+
+function updateMapPointStats() {
+  const total = S.visibleSlamPoints + S.visibleLoadedMapPoints;
+  const el = document.getElementById('map-visible-stats');
+  if (el) el.textContent = `${total.toLocaleString('ro-RO')} vizibile`;
+}
+
+function renderSlamCloud(pointsArr) {
+  if (mapDisplaySuppressed) return;
+  S.rawSlamPoints = Array.isArray(pointsArr) ? pointsArr : [];
+  if (!S.pointsMesh) return;
+  // O hartă salvată este reperul stabil; live-ul este folosit doar dacă nu există una încărcată.
+  if (S.rawLoadedMapPoints.length < 200) autoAlignMapToFloor(S.rawSlamPoints, false);
+  S.visibleSlamPoints = renderFilteredMapLayer(S.pointsMesh, S.rawSlamPoints);
+  updateMapPointStats();
+}
+
+function renderRealSensePoints(pointsArr) {
+  if (!S.cameraPointsMesh) return;
+  const n = pointsArr.length;
+  const pos = new Float32Array(n * 3); const col = new Float32Array(n * 3);
+  const cosY = Math.cos(S.pose.yaw); const sinY = Math.sin(S.pose.yaw);
+
+  for (let i = 0; i < n; i++) {
+    const pt = pointsArr[i];
+    // Rămâne nativ, corecția de oglindă fiind deja executată pe vectori în server.py
+    pos[i*3]   = S.pose.x + (pt.z * cosY - pt.x * sinY);
+    pos[i*3+1] = pt.y + 0.75; 
+    pos[i*3+2] = -(S.pose.y + (pt.z * sinY + pt.x * cosY));
+    col[i*3]   = pt.r / 255.0; col[i*3+1] = pt.g / 255.0; col[i*3+2] = pt.b / 255.0;
+  }
+  S.cameraPointsMesh.geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  S.cameraPointsMesh.geometry.setAttribute('color', new THREE.BufferAttribute(col, 3));
+}
+
+function renderLoadedMap(pointsArr) {
+  if (mapDisplaySuppressed) return;
+  S.rawLoadedMapPoints = Array.isArray(pointsArr) ? pointsArr : [];
+  if (!S.loadedMapMesh) return;
+  autoAlignMapToFloor(S.rawLoadedMapPoints, false);
+  S.visibleLoadedMapPoints = renderFilteredMapLayer(S.loadedMapMesh, S.rawLoadedMapPoints);
+  updateMapPointStats();
+}
+
+function updateMapViewFilters() {
+  const numberValue = (id, fallback, minimum, maximum) => {
+    const element = document.getElementById(id);
+    const raw = element?.value?.trim();
+    const parsed = raw === '' ? NaN : Number(raw);
+    const value = Number.isFinite(parsed) ? parsed : fallback;
+    const bounded = Math.max(minimum, Math.min(maximum, value));
+    if (element && (!Number.isFinite(parsed) || bounded !== parsed)) element.value = bounded;
+    return bounded;
+  };
+  const zMin = numberValue('map-z-min', MAP_VIEW_DEFAULTS.zMin, -3.00, 1.00);
+  const zMax = Math.max(zMin + 0.05, numberValue('map-z-max', MAP_VIEW_DEFAULTS.zMax, 0.20, 4.00));
+  const zMaxInput = document.getElementById('map-z-max');
+  if (zMaxInput && Number(zMaxInput.value) !== zMax) zMaxInput.value = zMax.toFixed(2);
+  mapViewFilters = {
+    zMin, zMax,
+    density: numberValue('map-density', MAP_VIEW_DEFAULTS.density, 10, 100),
+    pointSize: numberValue('map-point-size', MAP_VIEW_DEFAULTS.pointSize, 0.010, 0.100),
+    opacity: numberValue('map-opacity', MAP_VIEW_DEFAULTS.opacity * 100, 20, 100) / 100,
+    heightOffset: numberValue('map-height-offset', MAP_VIEW_DEFAULTS.heightOffset, -3.00, 3.00),
+    floorLeveling: Boolean(document.getElementById('map-floor-leveling')?.checked),
+    floorBand: numberValue('map-floor-band', MAP_VIEW_DEFAULTS.floorBand, 0.03, 0.25),
+    floorColor: document.getElementById('map-floor-color')?.value || MAP_VIEW_DEFAULTS.floorColor,
+    floorVisible: Boolean(document.getElementById('map-floor-visible')?.checked),
+    colorMode: document.getElementById('map-color-mode')?.value || MAP_VIEW_DEFAULTS.colorMode,
+    liveVisible: Boolean(document.getElementById('layer-live')?.checked),
+    loadedVisible: Boolean(document.getElementById('layer-loaded')?.checked),
+    cameraVisible: Boolean(document.getElementById('layer-camera')?.checked)
+  };
+  document.getElementById('map-z-min-val').textContent = `${zMin.toFixed(2)} m`;
+  document.getElementById('map-z-max-val').textContent = `${zMax.toFixed(2)} m`;
+  document.getElementById('map-density-val').textContent = `${mapViewFilters.density.toFixed(0)}%`;
+  document.getElementById('map-point-size-val').textContent = mapViewFilters.pointSize.toFixed(3);
+  document.getElementById('map-opacity-val').textContent = `${Math.round(mapViewFilters.opacity * 100)}%`;
+  document.getElementById('map-height-offset-val').textContent = `${mapViewFilters.heightOffset >= 0 ? '+' : ''}${mapViewFilters.heightOffset.toFixed(2)} m`;
+  document.getElementById('map-floor-band-val').textContent = `±${mapViewFilters.floorBand.toFixed(2)} m`;
+
+  for (const mesh of [S.pointsMesh, S.loadedMapMesh]) {
+    if (!mesh) continue;
+    mesh.material.size = mapViewFilters.pointSize;
+    mesh.material.opacity = mapViewFilters.opacity;
+    mesh.material.needsUpdate = true;
+  }
+  if (S.pointsMesh) S.pointsMesh.visible = !mapDisplaySuppressed && mapViewFilters.liveVisible;
+  if (S.loadedMapMesh) S.loadedMapMesh.visible = !mapDisplaySuppressed && mapViewFilters.loadedVisible;
+  if (S.cameraPointsMesh) S.cameraPointsMesh.visible = mapViewFilters.cameraVisible;
+  const floorSource=S.rawLoadedMapPoints.length>=200 ? S.rawLoadedMapPoints : S.rawSlamPoints;
+  autoAlignMapToFloor(floorSource, false);
+  renderSlamCloud(S.rawSlamPoints);
+  renderLoadedMap(S.rawLoadedMapPoints);
+  updateFloorStatus();
+}
+
+function recalculateFloorPlane() {
+  S.floorPlane=null; S.floorPlaneSignature=null; S.floorPlaneSource=null;
+  mapViewFilters.floorLeveling=Boolean(document.getElementById('map-floor-leveling')?.checked);
+  mapViewFilters.floorBand=Number(document.getElementById('map-floor-band')?.value) || MAP_VIEW_DEFAULTS.floorBand;
+  const source=S.rawLoadedMapPoints.length>=200 ? S.rawLoadedMapPoints : S.rawSlamPoints;
+  autoAlignMapToFloor(source, true);
+  updateMapViewFilters();
+}
+
+function mapViewBounds() {
+  const points=S.rawLoadedMapPoints.length ? S.rawLoadedMapPoints : S.rawSlamPoints;
+  if (!points.length) return {cx:S.pose.x, cy:S.pose.y, span:12};
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  const step=Math.max(1,Math.floor(points.length/12000));
+  for (let i=0;i<points.length;i+=step) {
+    const x=Number(points[i].x), y=Number(points[i].y);
+    if (!Number.isFinite(x)||!Number.isFinite(y)) continue;
+    minX=Math.min(minX,x); maxX=Math.max(maxX,x); minY=Math.min(minY,y); maxY=Math.max(maxY,y);
+  }
+  if (!Number.isFinite(minX)) return {cx:S.pose.x,cy:S.pose.y,span:12};
+  return {cx:(minX+maxX)/2, cy:(minY+maxY)/2, span:Math.max(6,maxX-minX,maxY-minY)};
+}
+
+function setMapTopView() {
+  if (!S.camera || !S.controls) return;
+  const {cx,cy,span}=mapViewBounds(), world=worldToThree(cx,cy);
+  S.camera.up.set(0,0,-1);
+  S.camera.position.set(world.tx, Math.max(8,span*0.85), world.tz+0.001);
+  S.controls.target.set(world.tx,0,world.tz); S.controls.update();
+}
+
+function setMapPerspectiveView() {
+  if (!S.camera || !S.controls) return;
+  const {cx,cy,span}=mapViewBounds(), world=worldToThree(cx,cy);
+  S.camera.up.set(0,1,0);
+  S.camera.position.set(world.tx+span*0.55, Math.max(5,span*0.55), world.tz+span*0.65);
+  S.controls.target.set(world.tx,0,world.tz); S.controls.update();
+}
+
+function resetMapViewFilters(redraw = true) {
+  const values = {
+    'map-z-min': MAP_VIEW_DEFAULTS.zMin, 'map-z-max': MAP_VIEW_DEFAULTS.zMax,
+    'map-density': MAP_VIEW_DEFAULTS.density, 'map-point-size': MAP_VIEW_DEFAULTS.pointSize,
+    'map-opacity': MAP_VIEW_DEFAULTS.opacity * 100,
+    'map-height-offset': MAP_VIEW_DEFAULTS.heightOffset,
+    'map-floor-band': MAP_VIEW_DEFAULTS.floorBand,
+    'map-floor-color': MAP_VIEW_DEFAULTS.floorColor,
+    'map-color-mode': MAP_VIEW_DEFAULTS.colorMode
+  };
+  Object.entries(values).forEach(([id, value]) => {
+    const element = document.getElementById(id);
+    if (element) element.value = value;
+  });
+  document.getElementById('layer-live').checked = MAP_VIEW_DEFAULTS.liveVisible;
+  document.getElementById('layer-loaded').checked = MAP_VIEW_DEFAULTS.loadedVisible;
+  document.getElementById('layer-camera').checked = MAP_VIEW_DEFAULTS.cameraVisible;
+  document.getElementById('map-floor-leveling').checked = MAP_VIEW_DEFAULTS.floorLeveling;
+  document.getElementById('map-floor-visible').checked = MAP_VIEW_DEFAULTS.floorVisible;
+  S.floorPlane=null; S.floorPlaneSignature=null; S.floorPlaneSource=null;
+  if (redraw) updateMapViewFilters();
+}
+
+function renderNavigationPath(path, color = 0xfacc15) {
+  if (!S.routeLine || !S.routePoints || !Array.isArray(path) || path.length < 1) return;
+  const positions = new Float32Array(path.length * 3);
+  path.forEach((point, index) => {
+    const x = Number(Array.isArray(point) ? point[0] : point.x);
+    const y = Number(Array.isArray(point) ? point[1] : point.y);
+    const world = worldToThree(x, y);
+    positions[index * 3] = world.tx;
+    positions[index * 3 + 1] = 0.14;
+    positions[index * 3 + 2] = world.tz;
+  });
+  S.routeLine.geometry.dispose();
+  S.routeLine.geometry = new THREE.BufferGeometry();
+  S.routeLine.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  S.routeLine.material.color.setHex(color);
+  S.routeLine.visible = path.length >= 2;
+  S.routePoints.geometry.dispose();
+  S.routePoints.geometry = new THREE.BufferGeometry();
+  S.routePoints.geometry.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3));
+  S.routePoints.visible = true;
+}
+
+function renderDynamicCostmap(points) {
+  if (!S.dynamicCostmapMesh) return;
+  const valid = Array.isArray(points) ? points.filter(point =>
+    Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y))) : [];
+  const positions = new Float32Array(valid.length * 3);
+  const colors=new Float32Array(valid.length*3);
+  valid.forEach((point, index) => {
+    const world = worldToThree(Number(point.x), Number(point.y));
+    positions[index * 3] = world.tx;
+    positions[index * 3 + 1] = 0.10;
+    positions[index * 3 + 2] = world.tz;
+    const color=point.source?.endsWith('_comfort') ? [1.00,0.72,0.10]
+      : point.source==='lidar' ? [1.00,0.55,0.08]
+      : point.source==='camera' ? [0.95,0.20,0.55]
+      : [0.94,0.27,0.27];
+    colors[index*3]=color[0]; colors[index*3+1]=color[1]; colors[index*3+2]=color[2];
+  });
+  S.dynamicCostmapMesh.geometry.dispose();
+  S.dynamicCostmapMesh.geometry = new THREE.BufferGeometry();
+  S.dynamicCostmapMesh.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  S.dynamicCostmapMesh.geometry.setAttribute('color',new THREE.BufferAttribute(colors,3));
+  S.dynamicCostmapMesh.visible = valid.length > 0;
+}
+
+function applyCostmapZoom() {
+  const canvas = document.getElementById('costmap-canvas');
+  if (!canvas || !costmapView.data) return;
+  canvas.style.width = `${costmapView.data.width * costmapView.zoom}px`;
+  canvas.style.height = `${costmapView.data.height * costmapView.zoom}px`;
+  document.getElementById('costmap-zoom-label').textContent = `Zoom ${costmapView.zoom}×`;
+}
+
+function changeCostmapZoom(direction) {
+  costmapView.zoom = Math.max(1, Math.min(8, costmapView.zoom + direction));
+  applyCostmapZoom();
+}
+
+function closeCostmap2D() {
+  document.getElementById('costmap-modal').style.display = 'none';
+}
+
+function costmapCellDescription(red, green, blue) {
+  if (red > 220 && green < 110 && blue < 110) return 'obstacol brut PCD';
+  if (red > 220 && green > 100 && green < 190 && blue < 80) return `buffer blocat ${Number(costmapView.data?.clearance_radius||0.20).toFixed(2)} m`;
+  if (red > 180 && green > 130 && blue < 90) return 'zonă de confort: liberă, dar penalizată';
+  if (Math.abs(red - 38) < 4 && Math.abs(green - 38) < 4 && Math.abs(blue - 38) < 4) {
+    return costmapView.data?.planner_mode === 'nav2'
+      ? 'necunoscut: permis de Nav2'
+      : 'necunoscut: penalizat de A*';
+  }
+  return 'podea observată / liberă';
+}
+
+async function openCostmap2D() {
+  const modal = document.getElementById('costmap-modal');
+  const stats = document.getElementById('costmap-stats');
+  modal.style.display = 'flex';
+  const selectedDriver = document.getElementById('nav-driver').value || 'legacy';
+  stats.textContent = `Generez grila 2D pentru ${selectedDriver === 'nav2' ? 'Nav2' : 'A*'}...`;
+  document.getElementById('costmap-hover').textContent = 'X: — · Y: —';
+  try {
+    const settings = readCostmapSettings();
+    const query = new URLSearchParams({
+      resolution: settings.resolution,
+      min_points: settings.minPoints,
+      min_z: settings.minZ,
+      max_z: settings.maxZ,
+      radius: settings.radius,
+      comfort_radius:settings.comfortRadius,
+      clearance_weight:settings.clearanceWeight,
+      floor_tolerance: settings.floorTolerance,
+      level_floor: settings.levelFloor,
+      driver: selectedDriver
+    });
+    const response = await fetch(API_BASE + '/api/nav/costmap?' + query.toString());
+    const responseText = await response.text();
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (_) {
+      throw new Error(`backend HTTP ${response.status}: ${responseText || 'răspuns gol'}`);
+    }
+    if (!data.success) {
+      stats.textContent = `Eroare: ${data.error || 'costmap indisponibil'}`;
+      return;
+    }
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.getElementById('costmap-canvas');
+      canvas.width = data.width;
+      canvas.height = data.height;
+      const context = canvas.getContext('2d', {willReadFrequently:true});
+      context.imageSmoothingEnabled = false;
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0);
+      costmapView = {
+        data,
+        zoom: Math.max(1, Math.min(4, Math.floor(720 / Math.max(data.width, data.height))))
+      };
+      applyCostmapZoom();
+      const bounds = data.world_bounds;
+      const counts = data.counts;
+      document.getElementById('costmap-title').textContent = data.map_path;
+      const nav2Mode = data.planner_mode === 'nav2';
+      document.getElementById('costmap-unknown-legend').innerHTML = nav2Mode
+        ? '<i class="costmap-swatch" style="background:#262626;"></i>necunoscut / traversabil de Nav2'
+        : '<i class="costmap-swatch" style="background:#262626;"></i>necunoscut / penalizat de A*';
+      document.getElementById('costmap-comfort-legend').style.display = nav2Mode ? 'none' : '';
+      document.getElementById('costmap-heading').textContent = `Costmap ${nav2Mode ? 'Nav2' : 'A*'} 2D — rază ${data.clearance_radius.toFixed(2)} m`;
+      document.getElementById('costmap-active-note').textContent = nav2Mode
+        ? `Activ Nav2: amprentă hard ${data.clearance_radius.toFixed(2)} m · inflație efectivă ${data.nav2_inflation_radius.toFixed(2)} m. Griul necunoscut este permis; roșul și portocaliul sunt blocate.`
+        : `Activ A*: amprentă hard ${data.clearance_radius.toFixed(2)} m · confort până la ${data.comfort_radius.toFixed(2)} m (greutate ${data.clearance_weight.toFixed(2)}).`;
+      const effectiveInflation = nav2Mode ? data.nav2_inflation_radius : data.clearance_radius;
+      document.getElementById('costmap-radius-legend').innerHTML = `<i class="costmap-swatch" style="background:#f59e0b;"></i>zonă blocată prin inflația de ${effectiveInflation.toFixed(2)} m`;
+      const boundsFilter = data.bounds_filter || {};
+      const boundsLine = boundsFilter.applied
+        ? `Curățare margini PCD: ${boundsFilter.discarded_points} puncte izolate eliminate din limitele grilei.\n`
+        : '';
+      stats.textContent =
+        `Grilă: ${data.width}×${data.height} celule · ${data.resolution.toFixed(2)} m/celulă · raza de inflație ${effectiveInflation.toFixed(2)} m\n` +
+        `Limite lume: X ${bounds.min_x.toFixed(2)}…${bounds.max_x.toFixed(2)} m · Y ${bounds.min_y.toFixed(2)}…${bounds.max_y.toFixed(2)} m\n` +
+        boundsLine +
+        `Roșu brut: ${counts.raw_obstacle} · Portocaliu blocat: ${counts.inflated_buffer} · Galben penalizat: ${counts.comfort_penalty} · Verde liber: ${counts.known_free} (${counts.observed_floor} podea + ${counts.inferred_free} completat sigur) · Gri necunoscut: ${counts.unknown_penalized}\n` +
+        `Filtru planner: înălțime față de podea ${data.planner_filter.min_z.toFixed(2)}…${data.planner_filter.max_z.toFixed(2)} m · minimum ${data.planner_filter.min_points_per_cell} puncte/celulă.\n` +
+        `Podea: ${data.planner_filter.level_to_floor ? `nivelată, înclinare ${Number(data.floor_plane?.tilt_deg||0).toFixed(1)}°` : 'nivelare oprită'}. ${data.note}`;
+    };
+    image.onerror = () => { stats.textContent = 'Eroare: imaginea PNG a costmapului nu poate fi decodificată.'; };
+    image.src = 'data:image/png;base64,' + data.image_b64;
+  } catch (error) {
+    stats.textContent = `Eroare la încărcarea costmapului: ${error}`;
+  }
+}
+
+document.getElementById('costmap-canvas').addEventListener('mousemove', event => {
+  const canvas = event.currentTarget;
+  const data = costmapView.data;
+  if (!data) return;
+  const rect = canvas.getBoundingClientRect();
+  const pixelX = Math.max(0, Math.min(canvas.width - 1,
+    Math.floor((event.clientX - rect.left) * canvas.width / rect.width)));
+  const pixelY = Math.max(0, Math.min(canvas.height - 1,
+    Math.floor((event.clientY - rect.top) * canvas.height / rect.height)));
+  const cellX = data.bounds.min_x + pixelX;
+  const cellY = data.bounds.max_y - pixelY;
+  const rgba = canvas.getContext('2d').getImageData(pixelX, pixelY, 1, 1).data;
+  const state = costmapCellDescription(rgba[0], rgba[1], rgba[2]);
+  document.getElementById('costmap-hover').textContent =
+    `X ${(cellX * data.resolution).toFixed(2)} m · Y ${(cellY * data.resolution).toFixed(2)} m · ${state}`;
+});
+
+window.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.getElementById('costmap-modal').style.display === 'flex') {
+    closeCostmap2D();
+  }
+});
+
+// ── Unealta de poziție + orientare (stil "2D Pose Estimate" din RViz) ────
+let _poseTool = false;
+let _goalTool = false;
+let _drag = null;                 // { x, y, yaw } în coordonate LUME
+const DRAG_MIN_DIST = 0.15;       // m sub care nu considerăm că s-a tras
+
+function togglePoseTool(force) {
+  if (force !== false && _goalTool) toggleGoalTool(false);
+  _poseTool = (force === undefined) ? !_poseTool : force;
+  const btn = document.getElementById('init-pose-btn');
+  const canvas = document.getElementById('canvas-3d');
+
+  if (_poseTool) {
+    btn.textContent = '✅ Trage o săgeată pe hartă (Esc anulează)';
+    btn.style.background = '#dc2626';
+    canvas.style.cursor = 'crosshair';
+    canvas.addEventListener('pointerdown', onPoseDown);
+    canvas.addEventListener('pointermove', onPoseMove);
+    canvas.addEventListener('pointerup', onPoseUp);
+    window.addEventListener('pointerup', endDrag);   // eliberare în afara canvasului
+  } else {
+    btn.textContent = '🧭 Setează poziția și orientarea';
+    btn.style.background = '#7c3aed';
+    canvas.style.cursor = '';
+    canvas.removeEventListener('pointerdown', onPoseDown);
+    canvas.removeEventListener('pointermove', onPoseMove);
+    canvas.removeEventListener('pointerup', onPoseUp);
+    window.removeEventListener('pointerup', endDrag);
+    endDrag();
+  }
+}
+
+function toggleGoalTool(force) {
+  _goalTool = (force === undefined) ? !_goalTool : force;
+  const button = document.getElementById('nav-pick-btn');
+  const canvas = document.getElementById('canvas-3d');
+  if (_goalTool) {
+    togglePoseTool(false);
+    button.textContent = '✅ Click pe punctul B (Esc anulează)';
+    button.style.background = '#dc2626';
+    canvas.style.cursor = 'crosshair';
+    canvas.addEventListener('pointerdown', onGoalPick);
+  } else {
+    button.textContent = '⌖ Alege punctul B pe hartă';
+    button.style.background = '#2563eb';
+    canvas.style.cursor = '';
+    canvas.removeEventListener('pointerdown', onGoalPick);
+  }
+}
+
+function onGoalPick(event) {
+  if (event.button !== 0) return;
+  const point = pickGround(event);
+  if (!point) return;
+  event.preventDefault();
+  if (pendingNavPreview) {
+    clearNavigationPreview(false);
+    fetch(API_BASE + '/api/nav/preview/cancel', {method:'POST'});
+  }
+  document.getElementById('nav-goal-x').value = point.x.toFixed(2);
+  document.getElementById('nav-goal-y').value = point.y.toFixed(2);
+  if (S.goalMarker) {
+    const {tx, tz} = worldToThree(point.x, point.y);
+    S.goalMarker.position.set(tx, 0.04, tz);
+    S.goalMarker.visible = true;
+  }
+  document.getElementById('nav-result').textContent =
+    `Punct B selectat: (${point.x.toFixed(2)}, ${point.y.toFixed(2)})`;
+  toggleGoalTool(false);
+}
+
+/** Raycast pe planul solului -> coordonate LUME, sau null. */
+function pickGround(event) {
+  if (!S.camera) return null;
+  const rect = document.getElementById('canvas-3d').getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+     ((event.clientX - rect.left) / rect.width)  * 2 - 1,
+    -((event.clientY - rect.top)  / rect.height) * 2 + 1
+  );
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(ndc, S.camera);
+  const hit = new THREE.Vector3();
+  if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit)) return null;
+  return threeToWorld(hit.x, hit.z);
+}
+
+function onPoseDown(event) {
+  if (event.button !== 0) return;
+  const p = pickGround(event);
+  if (!p) return;
+  event.preventDefault();
+  if (S.controls) S.controls.enabled = false;
+  _drag = { x: p.x, y: p.y, yaw: S.pose.yaw };
+  drawPoseArrow(_drag, 0.6);
+}
+
+function onPoseMove(event) {
+  if (!_drag) return;
+  const p = pickGround(event);
+  if (!p) return;
+  const dx = p.x - _drag.x, dy = p.y - _drag.y;
+  const dist = Math.hypot(dx, dy);
+  // Unghiul se calculează în coordonate LUME; în cele Three.js ar ieși oglindit.
+  if (dist >= DRAG_MIN_DIST) _drag.yaw = Math.atan2(dy, dx);
+  drawPoseArrow(_drag, Math.max(0.6, dist));
+
+  const out = document.getElementById('status-result');
+  if (out) out.textContent =
+    `x=${_drag.x.toFixed(2)}  y=${_drag.y.toFixed(2)}  yaw=${(_drag.yaw * 180 / Math.PI).toFixed(1)}° — eliberează pentru a confirma`;
+}
+
+function onPoseUp() {
+  if (!_drag) return;
+  const { x, y, yaw } = _drag;
+  endDrag();
+  togglePoseTool(false);
+
+  // Feedback instant, prin aceeași regulă de orientare ca odometria
+  S.pose = { x, y, yaw };
+  applyRobotPose(x, y, yaw);
+  document.getElementById('pose-x').textContent   = x.toFixed(2);
+  document.getElementById('pose-y').textContent   = y.toFixed(2);
+  document.getElementById('pose-yaw').textContent = (yaw * 180 / Math.PI).toFixed(1);
+  _ignorePoseUntil = Date.now() + 2000;   // evită snap-back-ul tranzitoriu
+  latestPoseSource = 'manual_pending';
+
+  sendInitialPose(x, y, yaw);
+}
+
+function endDrag() {
+  _drag = null;
+  if (S.poseArrow) S.poseArrow.visible = false;
+  if (S.controls) S.controls.enabled = true;
+}
+
+function drawPoseArrow(d, length) {
+  if (!S.poseArrow) return;
+  const { tx, tz } = worldToThree(d.x, d.y);
+  S.poseArrow.position.set(tx, 0.05, tz);
+  S.poseArrow.setDirection(headingVector(d.yaw));
+  S.poseArrow.setLength(length, Math.min(0.3, length * 0.3), Math.min(0.22, length * 0.22));
+  S.poseArrow.visible = true;
+}
+
+async function sendInitialPose(x, y, yaw) {
+  if (pendingNavPreview) {
+    await clearNavigationPreview(true);
+  }
+  const out = document.getElementById('status-result');
+  const mapName = document.getElementById('map-select').value || null;
+  out.textContent = 'Se repoziționează și se verifică cu datele live...';
+  try {
+    const res = await fetch(API_BASE + '/api/slam/relocalize', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        x, y, yaw, map_name: mapName,
+        local_only: false,
+        force_native: true
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      const refinement = data.refinement || null;
+      if (refinement && refinement.ok) {
+        S.pose = {
+          x: Number(refinement.x), y: Number(refinement.y),
+          yaw: Number(refinement.yaw), source: 'local_lidar_icp'
+        };
+        latestPoseSource = 'local_lidar_icp';
+        _ignorePoseUntil = 0;
+        applyRobotPose(S.pose.x, S.pose.y, S.pose.yaw);
+        document.getElementById('pose-x').textContent = S.pose.x.toFixed(2);
+        document.getElementById('pose-y').textContent = S.pose.y.toFixed(2);
+        document.getElementById('pose-yaw').textContent = (S.pose.yaw*180/Math.PI).toFixed(1);
+      }
+      const extra = refinement && refinement.ok ? `\n✅ Poziție rafinată: x=${refinement.x.toFixed(2)} y=${refinement.y.toFixed(2)} yaw=${(refinement.yaw*180/Math.PI).toFixed(1)}° (score=${refinement.score.toFixed(3)})` : '';
+      const switched = data.executor_override
+        ? `\n✅ Executor selectat explicit: Controller local Nav2. ${data.executor_override.reason}`
+        : '';
+      out.textContent = `✅ ${data.output}${extra}${switched}`;
+    } else {
+      const failed = (data.steps || []).filter(s => !s.ok).map(s => `${s.step}: ${s.detail}`);
+      const details = failed.length ? '\n' + failed.join('\n') : '';
+      if (data.local_controller_pose_ready || data.local_controller_anchor_ready) {
+        out.textContent = `❌ ${data.error || '1102 nativ indisponibil'}${details}\nProfilul A* stabil nu comută automat pe controllerul local.`;
+        refreshNavigationSensorReadiness();
+      } else {
+        out.textContent = `❌ ${data.error || 'Eroare'}${details}`;
+      }
+    }
+  } catch(e) {
+    out.textContent = `Eroare: ${e}`;
+  }
+}
+
+async function resetSlamBuffer() {
+  await fetch(API_BASE + '/api/slam/clear', {method: 'POST'});
+}
+
+function setRealtimeScanUI(active) {
+  realtimeScanActive = Boolean(active);
+  const button = document.getElementById('scan-toggle-btn');
+  button.textContent = realtimeScanActive ? '⏸ Pauză scanare' : '▶ Continuă scanarea';
+  button.style.background = realtimeScanActive ? '#d97706' : '#16a34a';
+  document.getElementById('scan-state-text').textContent =
+    `Scanare live: ${realtimeScanActive ? 'activă' : 'oprită'}`;
+}
+
+async function toggleRealtimeScan() {
+  const response = await fetch(API_BASE + '/api/slam/scan', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({active: !realtimeScanActive})
+  });
+  const data = await response.json();
+  if (data.success) setRealtimeScanUI(data.active);
+  else document.getElementById('scan-state-text').textContent = `Eroare: ${data.error || 'comanda a eșuat'}`;
+}
+
+async function stopAndClearRealtimeScan() {
+  const response = await fetch(API_BASE + '/api/slam/stop_scan', {method: 'POST'});
+  const data = await response.json();
+  if (data.success) {
+    setRealtimeScanUI(false);
+    document.getElementById('stat-pts').textContent = '0';
+    document.getElementById('scan-state-text').textContent = 'Scanare live: oprită, harta a fost ștearsă';
+  } else {
+    document.getElementById('scan-state-text').textContent = `Eroare: ${data.error || 'comanda a eșuat'}`;
+  }
+}
+
+async function checkRobotStatus() {
+  const out = document.getElementById('status-result');
+  out.textContent = 'Se verifică...';
+  try {
+    const res = await fetch(API_BASE + '/api/robot/status');
+    const data = await res.json();
+    out.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    out.textContent = `Eroare: ${e}`;
+  }
+}
+
+let fsmCommandInFlight = false;
+
+function updateFsmButtons() {
+  const input = document.getElementById("fsm-confirmation-input");
+  const allowed = Boolean(input && input.value === "ok" && !fsmCommandInFlight);
+  document.querySelectorAll(".fsm-state-button").forEach((button) => {
+    button.disabled = !allowed;
+  });
+  const hint = document.getElementById("fsm-confirmation-hint");
+  if (hint) {
+    hint.textContent = allowed
+      ? "Confirmare acceptată. Alege o singură comandă."
+      : "Confirmarea este valabilă pentru o singură comandă.";
+    hint.style.color = allowed ? "#86efac" : "#fca5a5";
+  }
+}
+
+function consumeFsmConfirmation() {
+  const input = document.getElementById("fsm-confirmation-input");
+  const out = document.getElementById("status-result");
+  if (!input || input.value !== "ok") {
+    out.textContent = "Comanda nu a fost trimisă. Scrie exact ok în caseta de confirmare.";
+    if (input) input.focus();
+    updateFsmButtons();
+    return null;
+  }
+  input.value = "";
+  updateFsmButtons();
+  return {confirmation: "ok"};
+}
+
+async function sendConfirmedFsmCommand(endpoint, pendingText, successText, buttonId, resetText) {
+  const confirmation = consumeFsmConfirmation();
+  if (!confirmation) return;
+
+  const out = document.getElementById("status-result");
+  const button = buttonId ? document.getElementById(buttonId) : null;
+  fsmCommandInFlight = true;
+  updateFsmButtons();
+  out.textContent = pendingText;
+  if (button) button.textContent = "⏳ Se trimite...";
+
+  try {
+    const res = await fetch(API_BASE + endpoint, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(confirmation)
+    });
+    const data = await res.json();
+    out.textContent = data.success ? (data.output || successText) : (data.error || "Eroare necunoscută");
+  } catch (e) {
+    out.textContent = "Eroare: " + e;
+  } finally {
+    fsmCommandInFlight = false;
+    if (button && resetText) button.textContent = resetText;
+    updateFsmButtons();
+  }
+}
+
+async function wakeUpRobot() {
+  await sendConfirmedFsmCommand(
+    "/api/robot/wake_up",
+    "Se rulează secvența Damp → Ready → Run...",
+    "Secvența Damp → Ready → Run a fost trimisă.",
+    "wake-up-btn",
+    "⚡ Autonom WAKE-UP (1→4→801)"
+  );
+}
+
+async function dampRobot() {
+  await sendConfirmedFsmCommand("/api/robot/damp", "Se trimite comanda Damp...", "Damp trimis cu succes", "damp-btn", "DAMP (FSM 1)");
+}
+
+async function zeroTorqueRobot() {
+  await sendConfirmedFsmCommand("/api/robot/zero_torque", "Se trimite comanda Zero Torque...", "Zero Torque trimis cu succes", "zero-torque-btn", "ZERO TORQUE (0)");
+}
+
+async function standUpRobot() {
+  await sendConfirmedFsmCommand("/api/robot/stand_up", "Se trimite comanda Preparation...", "Preparation trimis cu succes", "stand-up-btn", "PREPARATION (4)");
+}
+
+async function runRobot() {
+  await sendConfirmedFsmCommand("/api/robot/start", "Se trimite comanda Run...", "Run trimis cu succes", "run-btn", "RUN (FSM 801)");
+}
+
+// =====================================================================
+// TELEOP prin tastatură — trimite comenzi vx/vy/vyaw pe WS-ul deja
+// deschis, backend-ul le trimite la sport_client.move_to() cu watchdog
+// de siguranță (vezi server.py).
+// =====================================================================
+let TELEOP_LINEAR_SPEED = 0.30;   // m/s
+let TELEOP_YAW_SPEED    = 0.50;   // rad/s
+
+function updateSpeedSettings() {
+  const linVal = parseFloat(document.getElementById('linear-speed-input').value);
+  const angVal = parseFloat(document.getElementById('yaw-speed-input').value);
+  
+  TELEOP_LINEAR_SPEED = linVal;
+  TELEOP_YAW_SPEED = angVal;
+  
+  document.getElementById('linear-speed-val').textContent = linVal.toFixed(2);
+  document.getElementById('yaw-speed-val').textContent = angVal.toFixed(2);
+}
+
+const TELEOP_SEND_INTERVAL = 150;  // ms — trebuie < watchdog-ul din server.py
+
+const keysPressed = new Set();
+let teleopInterval = null;
+const TELEOP_KEYS = ['w','a','s','d','q','e','arrowup','arrowdown','arrowleft','arrowright'];
+
+function computeTeleopCmd() {
+  let vx = 0, vy = 0, vyaw = 0;
+  if (keysPressed.has('w') || keysPressed.has('arrowup'))    vx += TELEOP_LINEAR_SPEED;
+  if (keysPressed.has('s') || keysPressed.has('arrowdown'))  vx -= TELEOP_LINEAR_SPEED;
+  if (keysPressed.has('a') || keysPressed.has('arrowleft'))  vyaw += TELEOP_YAW_SPEED;
+  if (keysPressed.has('d') || keysPressed.has('arrowright')) vyaw -= TELEOP_YAW_SPEED;
+  if (keysPressed.has('q')) vy += TELEOP_LINEAR_SPEED;
+  if (keysPressed.has('e')) vy -= TELEOP_LINEAR_SPEED;
+  return { vx, vy, vyaw };
+}
+
+function updateTeleopUI(cmd, active) {
+  const dot = document.getElementById('teleop-dot');
+  const label = document.getElementById('teleop-cmd');
+  if (dot) dot.className = 'status-dot' + (active ? ' ok' : '');
+  if (label) label.textContent = `vx=${cmd.vx.toFixed(2)} vy=${cmd.vy.toFixed(2)} ω=${cmd.vyaw.toFixed(2)}`;
+}
+
+function sendTeleop(cmd) {
+  if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
+  S.ws.send(JSON.stringify({ type: 'teleop', ...cmd }));
+}
+
+window.addEventListener('keydown', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === 'escape' && _poseTool) { togglePoseTool(false); return; }
+  if (k === 'escape' && _goalTool) { toggleGoalTool(false); return; }
+  if (!TELEOP_KEYS.includes(k)) return;
+  // Nu interceptăm dacă utilizatorul SCRIE într-un câmp de text.
+  // Atenție: slider-ele (input type="range") păstrează focusul după click,
+  // iar vechea verificare pe tagName === 'INPUT' bloca tastele W/A/S/D
+  // până dădeai click în altă parte. Excludem doar câmpurile de text.
+  const ae = document.activeElement;
+  const inputType = (ae?.type || '').toLowerCase();
+  const isTextEntry = ae && (
+    ae.tagName === 'TEXTAREA' ||
+    ae.isContentEditable ||
+    (ae.tagName === 'INPUT' &&
+     ['text', 'search', 'email', 'password', 'tel', 'url'].includes(inputType))
+  );
+  if (isTextEntry) return;
+  // După editarea razei/costmapului, câmpul numeric păstra focusul și făcea
+  // tastatura să pară moartă. La prima tastă de teleop încheiem editarea.
+  if (ae?.tagName === 'INPUT' && inputType === 'number') ae.blur();
+  e.preventDefault();
+  const wasIdle = keysPressed.size === 0;
+  keysPressed.add(k);
+  if (wasIdle) {
+    const cmd = computeTeleopCmd();
+    sendTeleop(cmd);
+    updateTeleopUI(cmd, true);
+  }
+  if (!teleopInterval) {
+    teleopInterval = setInterval(() => {
+      const cmd = computeTeleopCmd();
+      sendTeleop(cmd);
+      updateTeleopUI(cmd, keysPressed.size > 0);
+    }, TELEOP_SEND_INTERVAL);
+  }
+});
+
+window.addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if (!TELEOP_KEYS.includes(k)) return;
+  keysPressed.delete(k);
+  if (keysPressed.size === 0) {
+    if (teleopInterval) { clearInterval(teleopInterval); teleopInterval = null; }
+    const stopCmd = { vx: 0, vy: 0, vyaw: 0 };
+    sendTeleop(stopCmd);
+    updateTeleopUI(stopCmd, false);
+  }
+});
+
+// Siguranță suplimentară: dacă fereastra/tab-ul pierde focus, oprește imediat.
+window.addEventListener('blur', () => {
+  keysPressed.clear();
+  if (teleopInterval) { clearInterval(teleopInterval); teleopInterval = null; }
+  const stopCmd = { vx: 0, vy: 0, vyaw: 0 };
+  sendTeleop(stopCmd);
+  updateTeleopUI(stopCmd, false);
+});
+
+function animate() {
+  if (S.controls) S.controls.update();
+  
+  // Un singur punct de aplicare a regulii de orientare (vezi applyRobotPose).
+  applyRobotPose(S.pose.x, S.pose.y, S.pose.yaw);
+  
+  if (S.renderer) S.renderer.render(S.scene, S.camera);
+  requestAnimationFrame(animate);
+}
+
+async function startMappingRobot() {
+  const out = document.getElementById('status-result');
+  out.textContent = 'Se pornește cartografierea SLAM (1801)...';
+  try {
+    const res = await fetch(API_BASE + '/api/slam/start_mapping', {method: 'POST'});
+    const data = await res.json();
+    out.textContent = data.success ? 'Cartografiere pornită pe robot.' : (data.error || 'Eroare');
+  } catch (e) {
+    out.textContent = `Eroare: ${e}`;
+  }
+}
+
+async function saveRobotMap() {
+  const out = document.getElementById('status-result');
+  const nameInput = document.getElementById('map-name-input').value.trim();
+  const mapName = nameInput || 'harta_g1';
+  out.textContent = `Se oprește mapping-ul și se salvează "${mapName}" prin API 1802...`;
+  try {
+    const res = await fetch(API_BASE + '/api/slam/save_robot', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({map_name: mapName})
+    });
+    const data = await res.json();
+    out.textContent = data.success ? (data.output || 'Harta a fost salvată cu succes.') : (data.error || 'Eroare');
+    if (data.success) refreshMapList();
+  } catch (e) {
+    out.textContent = `Eroare: ${e}`;
+  }
+}
+
+async function refreshMapList() {
+  const select = document.getElementById('map-select');
+  select.innerHTML = '<option value="">Se încarcă lista...</option>';
+  try {
+    const res = await fetch(API_BASE + '/api/slam/list_maps');
+    const data = await res.json();
+    if (data.success && data.maps && data.maps.length > 0) {
+      select.innerHTML = '';
+      data.maps.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.path;
+        opt.textContent = m.name;
+        select.appendChild(opt);
+      });
+      const preferred = data.maps.find(m => /(^|\/)harta_03aug\.pcd$/i.test(m.path || ''));
+      if (preferred) select.value = preferred.path;
+    } else {
+      select.innerHTML = '<option value="">Nu s-au găsit hărți (.pcd)</option>';
+    }
+  } catch (e) {
+    select.innerHTML = `<option value="">Eroare: ${e}</option>`;
+  }
+}
+
+async function loadRobotMap() {
+  const out = document.getElementById('status-result');
+  if (pendingNavPreview) {
+    await clearNavigationPreview(true);
+  }
+  const selectedMap = document.getElementById('map-select').value;
+  if (!selectedMap) {
+    alert("Vă rugăm să selectați o hartă din listă!");
+    return;
+  }
+  out.textContent = `Se afișează harta. Apoi marchează poziția reală a robotului...`;
+  enableMapVisualization();
+  try {
+    const res = await fetch(API_BASE + '/api/slam/load_robot', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({map_name: selectedMap})
+    });
+    const data = await res.json();
+    out.textContent = data.success
+      ? (data.output || 'Harta s-a încărcat. Acum setează poziția și orientarea reală a robotului pe hartă.')
+      : (data.error || 'Eroare');
+  } catch (e) {
+    out.textContent = `Eroare: ${e}`;
+  }
+}
+
+async function clearDisplayedMap() {
+  const out = document.getElementById('status-result');
+  clearMapVisualization();
+  out.textContent = 'Harta a fost eliminată complet din afișarea 3D. Localizarea și fișierul PCD au rămas active.';
+}
+
+async function startRelocationRobot() {
+  const out = document.getElementById('status-result');
+  const executor = document.getElementById('nav-executor').value || 'native_1102';
+  if (executor === 'local_velocity') {
+    const selectedMap = document.getElementById('map-select').value;
+    if (!selectedMap) {
+      out.textContent = 'Selectează și afișează întâi harta PCD.';
+      return;
+    }
+    if (!['manual_pending', 'anchored_pelvis', 'local_lidar_icp'].includes(latestPoseSource)) {
+      out.textContent = 'Setează întâi poziția și orientarea reală pe hartă.';
+      return;
+    }
+    out.textContent = 'Se reverifică poziția curentă prin ICP LiDAR–PCD...';
+    try {
+      const res = await fetch(API_BASE + '/api/slam/relocalize', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          map_name:selectedMap, x:S.pose.x, y:S.pose.y, yaw:S.pose.yaw,
+          local_only:true
+        })
+      });
+      const data = await res.json();
+      out.textContent = data.success
+        ? `✅ ${data.output}`
+        : `❌ ${data.error || data.local_localization?.error || 'Localizarea locală nu a convergat'}`;
+    } catch (error) {
+      out.textContent = `Eroare: ${error.message || error}`;
+    }
+    return;
+  }
+  out.textContent = 'Se trimite comanda nativă Unitree de repornire localizare...';
+  try {
+    const res = await fetch(API_BASE + '/api/slam/start_relocation', {method: 'POST'});
+    const data = await res.json();
+    out.textContent = data.success ? 'Comandă de localizare trimisă.' : (data.error || 'Eroare');
+  } catch (e) {
+    out.textContent = `Eroare: ${e}`;
+  }
+}
+
+['nav-goal-x', 'nav-goal-y', 'nav-goal-yaw', 'nav-timeout', 'linear-speed-input', 'nav-goal-gesture', 'nav-driver', 'nav-executor'].forEach(id => {
+  const input = document.getElementById(id);
+  if (input) input.addEventListener('input', () => {
+    if (!pendingNavPreview) return;
+    clearNavigationPreview(false);
+    fetch(API_BASE + '/api/nav/preview/cancel', {method:'POST'});
+    document.getElementById('nav-result').textContent = 'Ținta s-a modificat. Previzualizează ruta din nou.';
+  });
+});
+
+resetMapViewFilters(false);
+// Browserul poate restaura automat valoarea veche a unui <select> după reload.
+// Pornim deliberat pe calea verificată local; operatorul poate selecta manual
+// 1102 ulterior, când diagnosticul arată că localizarea nativă este pregătită.
+document.getElementById('nav-driver').value = 'legacy';
+document.getElementById('nav-executor').value = 'native_1102';
+setTimeout(() => { init3D(); updateMapViewFilters(); }, 100);
+initWS(); refreshMapList(); refreshNavigationQueue(); refreshNavigationSensorReadiness();
+setInterval(refreshNavigationSensorReadiness, 1000);
+</script>
+</body>
+</html>

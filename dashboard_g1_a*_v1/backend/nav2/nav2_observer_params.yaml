@@ -1,0 +1,88 @@
+planner_server:
+  ros__parameters:
+    use_sim_time: false
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.25
+      use_astar: true
+      # Podeaua extrasă din PCD este fragmentată. Necunoscutul rămâne cost mare,
+      # însă poate lega două regiuni cunoscute; obstacolele rămân letale.
+      allow_unknown: true
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: map
+      robot_base_frame: base_link
+      resolution: 0.08
+      track_unknown_space: true
+      always_send_full_costmap: true
+      # Observerul folosește temporar aceeași rază hard ca dashboard-ul.
+      # Înainte de mișcare aceasta va fi înlocuită cu footprintul măsurat.
+      robot_radius: 0.20
+      plugins: ["static_layer", "voxel_layer", "inflation_layer"]
+
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_topic: /map
+        map_subscribe_transient_local: true
+        subscribe_to_updates: false
+
+      voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"
+        enabled: true
+        publish_voxel_map: true
+        footprint_clearing_enabled: true
+        origin_z: 0.0
+        z_resolution: 0.10
+        z_voxels: 16
+        max_obstacle_height: 1.85
+        mark_threshold: 0
+        observation_sources: lidar
+        lidar:
+          # Fluxul brut Mid360 rămâne activ chiar dacă 1804 nu pornește
+          # /unitree/slam_localization/points. TF-ul livox_frame->map este
+          # furnizat de adaptorul v24 pe baza ancorei și odometriei pelvisului.
+          topic: /utlidar/cloud_livox_mid360
+          data_type: PointCloud2
+          sensor_frame: livox_frame
+          clearing: true
+          marking: true
+          # Norul este transformat în base_link (pelvis); podeaua G1 este la
+          # aproximativ -0.75 m. Backendul rafinează aceste limite live.
+          min_obstacle_height: -0.60
+          max_obstacle_height: 1.10
+          # Respinge auto-ecoul corpului/picioarelor G1 din jurul base_link.
+          obstacle_min_range: 0.30
+          obstacle_max_range: 4.00
+          raytrace_min_range: 0.20
+          raytrace_max_range: 5.00
+          observation_persistence: 0.0
+          expected_update_rate: 0.0
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        enabled: true
+        # Amprenta configurata are raza inscrisa ~0.206 m; 0.21 evita
+        # avertismentul Nav2 fara sa inchida culoare suplimentare in grila de 8 cm.
+        inflation_radius: 0.21
+        cost_scaling_factor: 4.0
+        inflate_unknown: false
+        inflate_around_unknown: false
+
+lifecycle_manager_nav2_observer:
+  ros__parameters:
+    use_sim_time: false
+    autostart: true
+    # Plannerul este lansat înainte ca operatorul să seteze ancora map→base.
+    # Activarea costmapului poate aștepta legitim TF-ul; bond watchdog-ul de
+    # 4 s interpreta această așteptare drept crash și omora planner_server.
+    # 0 dezactivează numai watchdog-ul de bond al managerului. Preflightul
+    # dashboardului continuă să verifice separat planner_ready, TF și hartă.
+    bond_timeout: 0.0
+    node_names: ["planner_server"]
